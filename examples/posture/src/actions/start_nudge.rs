@@ -5,5 +5,6 @@
 use crate::gen::hal::{Hal, SafeHal};
 
 pub fn run<H: Hal>(hal: &mut SafeHal<H>) {
-    hal.log("start_nudge (stub)");
+    hal.log("NUDGE");
+    hal.stim_set_intensity(5);
 }

@@ -488,7 +488,7 @@ int cmd_gate(const char *model_path, int release) {
     }
 
     int ok = failed < 0;
-    if (!ok && t && !strcmp(t->status, "active")) {
+    if (!ok && !release && t && !strcmp(t->status, "active")) {
         t->failures++;
         if (t->failures >= MAX_FAILURES) t->status = xstrdup("locked");
         ticket_save(t);
