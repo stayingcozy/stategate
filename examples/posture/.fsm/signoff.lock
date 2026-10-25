@@ -1,0 +1,8 @@
+# Written by `stategate signoff`. Only the architect runs it.
+hash: 6a92f5b7b1d8e0b6946159545bdf29a71748a05a9bac8b9b87211b35d8a4a827
+signed: 2026-10-25T00:49:09Z
+
+# action stim_off stub=0 used_by=posture.Off:entry,posture.Nudging:exit,
+# invariant inv.fault_off kind=every_state_handles event=FAULT target=posture.Off state= exit_event= limit_ms=-1 call= arg= max=-1
+# invariant inv.stim_duration kind=max_time_in_state event= target= state=posture.Nudging exit_event=NUDGE_DONE limit_ms=2000 call= arg= max=-1
+# invariant inv.stim_intensity kind=hal_clamp event= target= state= exit_event= limit_ms=-1 call=stim_set_intensity arg=u8 max=3

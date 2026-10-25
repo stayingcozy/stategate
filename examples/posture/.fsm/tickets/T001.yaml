@@ -1,0 +1,15 @@
+id: T001
+title: "Step 0: implement stim_off for real; stub start_nudge and the IMU"
+step: step0
+status: open
+base: ""
+failures: 0
+nodes:
+  - "posture.Off"
+  - "posture.Nudging"
+  - "posture.Monitoring"
+files:
+  - "src/actions/start_nudge.rs"
+  - "src/actions/stim_off.rs"
+  - "src/services/imu_posture.rs"
+  - "tests/logic_*.rs"

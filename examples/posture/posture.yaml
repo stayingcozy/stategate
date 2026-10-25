@@ -1,0 +1,81 @@
+# stategate model: back-worn posture-correction wearable.
+# Every (state, event) pair is either handled under `on` or listed under `ignore`.
+
+machine: { id: posture, version: 1, language: rust }
+
+events: [POWER_ON, POWER_OFF, CALIBRATED, SLOUCH, UPRIGHT, GRACE_ELAPSED, NUDGE_DONE, FAULT]
+
+hal:
+  - { call: stim_set_intensity, arg: u8 }   # 0 = off, 10 = strongest
+
+states:
+  - id: posture.Off
+    name: Off
+    initial: true
+    entry: [stim_off]
+    on:
+      POWER_ON: posture.Calibrating
+      FAULT: posture.Off
+    ignore: [POWER_OFF, CALIBRATED, SLOUCH, UPRIGHT, GRACE_ELAPSED, NUDGE_DONE]
+    layout: { x: 80, y: 220 }
+
+  - id: posture.Calibrating
+    name: Calibrating
+    on:
+      CALIBRATED: posture.Monitoring
+      POWER_OFF: posture.Off
+      FAULT: posture.Off
+    ignore: [POWER_ON, SLOUCH, UPRIGHT, GRACE_ELAPSED, NUDGE_DONE]
+    layout: { x: 300, y: 80 }
+
+  - id: posture.Monitoring
+    name: Monitoring
+    invoke: [imu_posture]
+    on:
+      SLOUCH: posture.Slouching
+      POWER_OFF: posture.Off
+      FAULT: posture.Off
+    ignore: [POWER_ON, CALIBRATED, UPRIGHT, GRACE_ELAPSED, NUDGE_DONE]
+    layout: { x: 520, y: 80 }
+
+  - id: posture.Slouching
+    name: Slouching
+    invoke: [imu_posture]
+    after: { ms: 3000, event: GRACE_ELAPSED }   # grace period before nudging
+    on:
+      UPRIGHT: posture.Monitoring
+      GRACE_ELAPSED: posture.Nudging
+      POWER_OFF: posture.Off
+      FAULT: posture.Off
+    ignore: [POWER_ON, CALIBRATED, SLOUCH, NUDGE_DONE]
+    layout: { x: 520, y: 300 }
+
+  - id: posture.Nudging
+    name: Nudging
+    invoke: [imu_posture]
+    entry: [start_nudge]
+    exit: [stim_off]                            # every way out stops stimulation
+    after: { ms: 1500, event: NUDGE_DONE }
+    on:
+      NUDGE_DONE: posture.Slouching
+      UPRIGHT: posture.Monitoring
+      POWER_OFF: posture.Off
+      FAULT: posture.Off
+    ignore: [POWER_ON, CALIBRATED, SLOUCH, GRACE_ELAPSED]
+    layout: { x: 300, y: 380 }
+
+actions:
+  start_nudge: { stub: true, note: "Step 0: log NUDGE and request intensity 5 (SafeHal clamps it)" }
+  stim_off: { locked: true, stub: false }
+
+services:
+  imu_posture: { stub: true, fidelity: primitive, emits: [SLOUCH, UPRIGHT], note: "Step 0: report a slouch at t = 10 s" }
+
+invariants:
+  - { id: inv.fault_off, locked: true, kind: every_state_handles, event: FAULT, target: posture.Off }
+  - { id: inv.stim_duration, locked: true, kind: max_time_in_state, state: posture.Nudging, limit_ms: 2000, exit_event: NUDGE_DONE }
+  - { id: inv.stim_intensity, locked: true, kind: hal_clamp, call: stim_set_intensity, max: 3 }
+
+steps:
+  - { id: step0, goal: "IMU stub reports a slouch at t = 10 s; the nudge writes to a log", status: active }
+  - { id: step1, goal: "Real IMU tilt threshold from recorded data", status: planned }

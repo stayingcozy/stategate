@@ -1,0 +1,18 @@
+{
+  "generator": "stategate",
+  "model": "posture.yaml",
+  "model_hash": "32bb3b609b2e18d167c82bd332184da0b09e97f30d1f13c3aef62a144a0956f0",
+  "files": {
+    "Cargo.toml": "abcedc15e30cfa21f55da804a27be2bf64e83479311d46b9153ad14b4cde102e",
+    "src/lib.rs": "da87db822e4fd5baf7ab13df0f5b761d1de7c74b6b4d5245cde3a74a4c41f5cf",
+    "src/gen/mod.rs": "f42604752ba94fbbfac71bb1ef00d61b406751586ceca204a0719770d813c474",
+    "src/actions/mod.rs": "a46768580850286d4aabde6abf2d8e806a5c99230a877dd90e3bc9337849103e",
+    "src/services/mod.rs": "52e0c7b3b5a6daf1d95a2f06f50871fb251263b70618e4bd96d4cf64b441296c",
+    "src/gen/hal.rs": "b63dc3dcc974a874a721de4b8887cae4a3cc0630f2fdd425ed19ec90f21267c8",
+    "src/gen/fake.rs": "d158804d99f841ef9c9e55e8c62c8a4ebdf7b9b49f260f7770e12988ece921a3",
+    "src/gen/machine.rs": "40d90b9991611666d582e9a7dcb65fb53d61f1e7c74bd38810cb67e014de2df8",
+    "tests/transitions.rs": "9083b45f42e17ef2793a7f4d4be3c7f25c87c23d51f31f45e9f0a79c9bbb6db9",
+    "tests/invariants.rs": "0ee260927b1de9ec4c7cc528cb11bbf043b55fd2c4217b0f9897b1ed6d71ac90",
+    "examples/sim.rs": "9240b1e68b2e53a5c4eb1251d484ba32ccc866bfbd86ae5633f48e2b00acd01a"
+  }
+}
