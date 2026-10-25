@@ -25,19 +25,19 @@ static int is_type_ident(const char *s) {
     return 1;
 }
 
-static int action_used(const Model *m, const char *id) {
+static int action_used(const SgModel *m, const char *id) {
     for (int i = 0; i < m->n_states; i++)
         if (sl_contains(&m->states[i].entry, id) || sl_contains(&m->states[i].exit, id)) return 1;
     return 0;
 }
 
-static int service_used(const Model *m, const char *id) {
+static int service_used(const SgModel *m, const char *id) {
     for (int i = 0; i < m->n_states; i++)
         if (sl_contains(&m->states[i].invoke, id)) return 1;
     return 0;
 }
 
-void check_statechart(const Model *m, StrList *e) {
+void check_statechart(const SgModel *m, StrList *e) {
     if (!is_snake_ident(m->id)) sl_pushf(e, "machine id '%s' must be lower_snake_case", m->id);
 
     if (m->events.n == 0) sl_pushf(e, "model declares no events");
@@ -150,7 +150,7 @@ void check_statechart(const Model *m, StrList *e) {
             if (!seen[i]) sl_pushf(e, "state %s is unreachable from the initial state", m->states[i].id);
 }
 
-void check_model_invariants(const Model *m, StrList *e) {
+void check_model_invariants(const SgModel *m, StrList *e) {
     for (int i = 0; i < m->n_invariants; i++) {
         const Invariant *v = &m->invariants[i];
         for (int j = 0; j < i; j++)
@@ -188,7 +188,7 @@ void check_model_invariants(const Model *m, StrList *e) {
     }
 }
 
-int validate_all(const char *path, Model *m, StrList *e1, StrList *e2, StrList *e3) {
+int validate_all(const char *path, SgModel *m, StrList *e1, StrList *e2, StrList *e3) {
     if (model_load(path, m, e1) != 0) return -1;
     check_statechart(m, e2);
     if (e2->n) return -1;

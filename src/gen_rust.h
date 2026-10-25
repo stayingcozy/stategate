@@ -15,6 +15,6 @@ typedef struct {
 } GenSet;
 
 /* Builds every generated and scaffold file for a valid model, in memory. */
-void gen_rust(const Model *m, GenSet *out);
+void gen_rust(const SgModel *m, GenSet *out);
 
 #endif

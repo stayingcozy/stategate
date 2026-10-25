@@ -22,7 +22,7 @@ static const char *const INV_KEYS[] = {"id", "locked", "kind", "event", "target"
 static const char *const STEP_KEYS[] = {"id", "goal", "status", NULL};
 static const char *const HAL_KEYS[] = {"call", "arg", NULL};
 
-static void parse_states(YReader *r, yaml_node_t *seq, Model *m) {
+static void parse_states(YReader *r, yaml_node_t *seq, SgModel *m) {
     if (!seq) { y_err(r, NULL, "missing required 'states' list"); return; }
     if (!y_is_seq(seq)) { y_err(r, seq, "'states' must be a list"); return; }
     int n = (int)(seq->data.sequence.items.top - seq->data.sequence.items.start);
@@ -89,7 +89,7 @@ static void parse_states(YReader *r, yaml_node_t *seq, Model *m) {
     }
 }
 
-static void parse_actions(YReader *r, yaml_node_t *map, Model *m) {
+static void parse_actions(YReader *r, yaml_node_t *map, SgModel *m) {
     if (!map) return;
     if (!y_is_map(map)) { y_err(r, map, "'actions' must map action id to settings"); return; }
     int n = (int)(map->data.mapping.pairs.top - map->data.mapping.pairs.start);
@@ -109,7 +109,7 @@ static void parse_actions(YReader *r, yaml_node_t *map, Model *m) {
     }
 }
 
-static void parse_services(YReader *r, yaml_node_t *map, Model *m) {
+static void parse_services(YReader *r, yaml_node_t *map, SgModel *m) {
     if (!map) return;
     if (!y_is_map(map)) { y_err(r, map, "'services' must map service id to settings"); return; }
     int n = (int)(map->data.mapping.pairs.top - map->data.mapping.pairs.start);
@@ -130,7 +130,7 @@ static void parse_services(YReader *r, yaml_node_t *map, Model *m) {
     }
 }
 
-static void parse_invariants(YReader *r, yaml_node_t *seq, Model *m) {
+static void parse_invariants(YReader *r, yaml_node_t *seq, SgModel *m) {
     if (!seq) return;
     if (!y_is_seq(seq)) { y_err(r, seq, "'invariants' must be a list"); return; }
     int n = (int)(seq->data.sequence.items.top - seq->data.sequence.items.start);
@@ -174,7 +174,7 @@ static void parse_invariants(YReader *r, yaml_node_t *seq, Model *m) {
     }
 }
 
-static void parse_steps(YReader *r, yaml_node_t *seq, Model *m) {
+static void parse_steps(YReader *r, yaml_node_t *seq, SgModel *m) {
     if (!seq) return;
     if (!y_is_seq(seq)) { y_err(r, seq, "'steps' must be a list"); return; }
     int n = (int)(seq->data.sequence.items.top - seq->data.sequence.items.start);
@@ -194,7 +194,7 @@ static void parse_steps(YReader *r, yaml_node_t *seq, Model *m) {
     }
 }
 
-static void parse_hal(YReader *r, yaml_node_t *seq, Model *m) {
+static void parse_hal(YReader *r, yaml_node_t *seq, SgModel *m) {
     if (!seq) return;
     if (!y_is_seq(seq)) { y_err(r, seq, "'hal' must be a list"); return; }
     int n = (int)(seq->data.sequence.items.top - seq->data.sequence.items.start);
@@ -215,7 +215,7 @@ static void parse_hal(YReader *r, yaml_node_t *seq, Model *m) {
     }
 }
 
-int model_load(const char *path, Model *m, StrList *errors) {
+int model_load(const char *path, SgModel *m, StrList *errors) {
     memset(m, 0, sizeof *m);
     m->path = xstrdup(path);
     size_t len;
@@ -269,31 +269,31 @@ int model_load(const char *path, Model *m, StrList *errors) {
     return errors->n == before ? 0 : -1;
 }
 
-State *model_state(const Model *m, const char *id) {
+State *model_state(const SgModel *m, const char *id) {
     for (int i = 0; i < m->n_states; i++)
         if (!strcmp(m->states[i].id, id)) return &m->states[i];
     return NULL;
 }
 
-Action *model_action(const Model *m, const char *id) {
+Action *model_action(const SgModel *m, const char *id) {
     for (int i = 0; i < m->n_actions; i++)
         if (!strcmp(m->actions[i].id, id)) return &m->actions[i];
     return NULL;
 }
 
-Service *model_service(const Model *m, const char *id) {
+Service *model_service(const SgModel *m, const char *id) {
     for (int i = 0; i < m->n_services; i++)
         if (!strcmp(m->services[i].id, id)) return &m->services[i];
     return NULL;
 }
 
-HalCall *model_hal(const Model *m, const char *call) {
+HalCall *model_hal(const SgModel *m, const char *call) {
     for (int i = 0; i < m->n_hal; i++)
         if (!strcmp(m->hal[i].call, call)) return &m->hal[i];
     return NULL;
 }
 
-int model_event_index(const Model *m, const char *event) {
+int model_event_index(const SgModel *m, const char *event) {
     for (int i = 0; i < m->events.n; i++)
         if (!strcmp(m->events.v[i], event)) return i;
     return -1;

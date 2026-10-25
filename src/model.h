@@ -86,17 +86,17 @@ typedef struct {
     int n_invariants;
     Step *steps;
     int n_steps;
-} Model;
+} SgModel;
 
 /* Parses the model and records schema errors (gate check 1). Returns 0
  * when the file parsed with no schema errors. */
-int model_load(const char *path, Model *m, StrList *errors);
+int model_load(const char *path, SgModel *m, StrList *errors);
 
-State *model_state(const Model *m, const char *id);
-Action *model_action(const Model *m, const char *id);
-Service *model_service(const Model *m, const char *id);
-HalCall *model_hal(const Model *m, const char *call);
-int model_event_index(const Model *m, const char *event);
+State *model_state(const SgModel *m, const char *id);
+Action *model_action(const SgModel *m, const char *id);
+Service *model_service(const SgModel *m, const char *id);
+HalCall *model_hal(const SgModel *m, const char *call);
+int model_event_index(const SgModel *m, const char *event);
 /* Target of (state, event), or NULL if not handled. */
 const char *state_target(const State *s, const char *event);
 
