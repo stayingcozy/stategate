@@ -26,4 +26,4 @@ target_link_libraries(stategate PRIVATE PkgConfig::YAML)
 
 install(TARGETS stategate DESTINATION bin)
 # `fsm` is a short alias for the same binary.
-install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink stategate \$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/fsm)")
+install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink stategate \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/fsm)")
