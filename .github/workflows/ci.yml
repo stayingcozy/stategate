@@ -5,9 +5,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libyaml-dev
-      - run: cmake -S . -B build && cmake --build build
+      - run: sudo apt-get update && sudo apt-get install -y libyaml-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev xvfb
+      - run: cmake -S . -B build && cmake --build build -j4
       - name: Gate the posture example
         run: build/stategate -C examples/posture gate
       - name: Red paths
         run: scripts/redpaths.sh
+      - name: Viewer smoke test
+        run: |
+          xvfb-run -a -s "-screen 0 1440x900x24" build/stategate-view examples/posture --send POWER_ON,CALIBRATED --screenshot "$PWD/viewer.png"
+          test -s viewer.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewer-screenshot
+          path: viewer.png

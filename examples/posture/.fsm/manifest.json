@@ -1,7 +1,7 @@
 {
   "generator": "stategate",
   "model": "posture.yaml",
-  "model_hash": "32bb3b609b2e18d167c82bd332184da0b09e97f30d1f13c3aef62a144a0956f0",
+  "model_hash": "70cf72513ae4f8e38d881606c0ad9776017574ea5c21ca66601ba2935ef8f586",
   "files": {
     "Cargo.toml": "abcedc15e30cfa21f55da804a27be2bf64e83479311d46b9153ad14b4cde102e",
     "src/lib.rs": "da87db822e4fd5baf7ab13df0f5b761d1de7c74b6b4d5245cde3a74a4c41f5cf",

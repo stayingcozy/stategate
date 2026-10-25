@@ -11,6 +11,6 @@ int cmd_init(const char *model_path);
 int cmd_export_mermaid(const char *model_path);
 
 /* Canonical text of every locked item; its hash is what the architect signs. */
-char *locked_canonical(const Model *m);
+char *locked_canonical(const SgModel *m);
 
 #endif

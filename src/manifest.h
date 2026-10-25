@@ -12,7 +12,7 @@ typedef struct {
     StrList hashes;
 } Manifest;
 
-int manifest_write(const Model *m, const GenSet *g);
+int manifest_write(const SgModel *m, const GenSet *g);
 /* Returns 0 if the manifest exists and parsed. */
 int manifest_read(Manifest *mf);
 const char *manifest_hash_of(const Manifest *mf, const char *path);

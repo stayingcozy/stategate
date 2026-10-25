@@ -26,7 +26,7 @@ static void print_errors(const char *title, const StrList *e) {
 }
 
 int cmd_validate(const char *model_path) {
-    Model m;
+    SgModel m;
     StrList e1 = {0}, e2 = {0}, e3 = {0};
     int r = validate_all(model_path, &m, &e1, &e2, &e3);
     print_errors("1 schema", &e1);
@@ -37,7 +37,7 @@ int cmd_validate(const char *model_path) {
 }
 
 int cmd_gen(const char *model_path) {
-    Model m;
+    SgModel m;
     StrList e1 = {0}, e2 = {0}, e3 = {0};
     if (validate_all(model_path, &m, &e1, &e2, &e3) != 0) {
         print_errors("1 schema", &e1);
@@ -68,7 +68,7 @@ int cmd_gen(const char *model_path) {
     return 0;
 }
 
-char *locked_canonical(const Model *m) {
+char *locked_canonical(const SgModel *m) {
     SB b;
     sb_init(&b);
     for (int i = 0; i < m->n_actions; i++) {
@@ -99,7 +99,7 @@ char *locked_canonical(const Model *m) {
     return b.s;
 }
 
-static char *locked_hash(const Model *m) {
+static char *locked_hash(const SgModel *m) {
     char *c = locked_canonical(m);
     char hex[65];
     sha256_hex(c, strlen(c), hex);
@@ -108,7 +108,7 @@ static char *locked_hash(const Model *m) {
 }
 
 int cmd_signoff(const char *model_path) {
-    Model m;
+    SgModel m;
     StrList e1 = {0}, e2 = {0}, e3 = {0};
     if (validate_all(model_path, &m, &e1, &e2, &e3) != 0) {
         print_errors("1 schema", &e1);
@@ -175,7 +175,7 @@ static int contains_tag(const char *text, const char *tag, const char *value) {
     return 0;
 }
 
-static void check_drift(const Model *m, const GenSet *g, StrList *e) {
+static void check_drift(const SgModel *m, const GenSet *g, StrList *e) {
     Manifest mf;
     if (manifest_read(&mf) != 0) {
         sl_pushf(e, "%s is missing: run stategate gen", MANIFEST_PATH);
@@ -221,7 +221,7 @@ static void check_wildcards(const GenSet *g, StrList *e) {
     }
 }
 
-static void check_traces(const Model *m, StrList *e) {
+static void check_traces(const SgModel *m, StrList *e) {
     char path[512];
     for (int i = 0; i < m->n_actions; i++) {
         const Action *a = &m->actions[i];
@@ -256,7 +256,7 @@ static int file_has_stub_marker(const char *path) {
     return r;
 }
 
-static int check_stubs(const Model *m, int release, StrList *e, StrList *stubs) {
+static int check_stubs(const SgModel *m, int release, StrList *e, StrList *stubs) {
     char path[512];
     for (int i = 0; i < m->n_actions; i++) {
         const Action *a = &m->actions[i];
@@ -290,7 +290,7 @@ static int matches_any(const StrList *globs, const char *path) {
     return 0;
 }
 
-static void check_scope(const Model *m, const GenSet *g, const Ticket *t, StrList *e, StrList *notes) {
+static void check_scope(const SgModel *m, const GenSet *g, const Ticket *t, StrList *e, StrList *notes) {
     if (!t) {
         sl_push(notes, "no active ticket: scope not checked (architect mode)");
         return;
@@ -378,7 +378,7 @@ static void check_tests(StrList *e, StrList *notes) {
     free(out);
 }
 
-static void write_gate_json(int ok, int release, const Model *m, const Ticket *t, int stub_count, const StrList *stubs,
+static void write_gate_json(int ok, int release, const SgModel *m, const Ticket *t, int stub_count, const StrList *stubs,
                             CheckResult *res) {
     SB b;
     sb_init(&b);
@@ -431,7 +431,7 @@ int cmd_gate(const char *model_path, int release) {
     tickets_load(&ts, &terrs);
     Ticket *t = ticket_current(&ts);
 
-    Model m;
+    SgModel m;
     memset(&m, 0, sizeof m);
     int failed = -1;
     StrList stubs = {0}, notes[N_CHECKS];
@@ -591,7 +591,7 @@ int cmd_init(const char *model_path) {
 }
 
 int cmd_export_mermaid(const char *model_path) {
-    Model m;
+    SgModel m;
     StrList e1 = {0}, e2 = {0}, e3 = {0};
     if (validate_all(model_path, &m, &e1, &e2, &e3) != 0) {
         print_errors("1 schema", &e1);

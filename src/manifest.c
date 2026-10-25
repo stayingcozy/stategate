@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-int manifest_write(const Model *m, const GenSet *g) {
+int manifest_write(const SgModel *m, const GenSet *g) {
     SB b;
     sb_init(&b);
     sb_printf(&b, "{\n  \"generator\": \"stategate\",\n  \"model\": \"%s\",\n  \"model_hash\": \"%s\",\n  \"files\": {\n",

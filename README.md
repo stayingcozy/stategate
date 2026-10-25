@@ -5,17 +5,22 @@ as a state machine in YAML. stategate generates the wiring and the transition
 tests, any agent you like writes the logic inside each node, and a
 deterministic gate decides what lands. The gate reports status; agents don't.
 
-Status: weekend MVP, Day 1. The command-line tool and the gate work end to end
-on the posture wearable example. The raylib + Clay viewer is Day 2.
+Status: weekend MVP. The command-line tool, the gate and a read-only viewer
+with a simulator work end to end on the posture wearable example.
+
+![stategate-view showing the posture machine, the gate result and the simulator](docs/viewer.png)
 
 ## Build
 
 Needs a C11 compiler, CMake, libyaml (`libyaml-dev` on Debian/Ubuntu,
-`brew install libyaml` on macOS) and, for the generated code, Rust.
+`brew install libyaml` on macOS) and, for the generated code, Rust. The viewer
+fetches raylib 5.5 at configure time; on Linux it also needs the X11 and GL
+headers (`libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev`).
+Pass `-DSTATEGATE_VIEWER=OFF` to build only the command-line tool.
 
 ```sh
 cmake -S . -B build && cmake --build build
-sudo cmake --install build      # installs stategate, plus `fsm` as an alias
+sudo cmake --install build      # installs stategate (alias fsm) and stategate-view
 scripts/redpaths.sh             # proves the gate turns red for each broken rule
 ```
 
@@ -39,6 +44,24 @@ The simulation runs Step 0 on fake hardware:
    13.0s  NUDGE
    14.5s  posture.Nudging --NUDGE_DONE--> posture.Slouching
 ```
+
+## The viewer
+
+```sh
+stategate-view examples/posture
+```
+
+The left two-thirds draws the machine from the layout saved in the model.
+The right third shows the last gate result from `.fsm/gate.json`, the stub
+count, the active ticket, a simulator and the step ladder. Click an event to
+fire it: the active state lights up and the transition it took turns blue;
+ignored events say so. The viewer reloads the model and the gate result when
+either file changes, keeps showing the last valid model while the file has
+errors, and never writes anything. Drag to pan, scroll to zoom, F to fit.
+
+It is read-only for now: you or your agent edit the YAML. `--send EV1,EV2`
+fires events at start-up and `--screenshot out.png` saves one frame and exits,
+which CI uses as a smoke test.
 
 ## How work flows
 
@@ -91,4 +114,7 @@ Checks run in order and stop at the first failure.
 - The active ticket's own file is exempt from the scope check, so an agent
   could edit its failure counter. Moving the counter out of reach comes later.
 - Flat states only; no nesting, parallel regions or history yet.
+- The viewer's simulator follows the model's transition table in C, separately
+  from the generated Rust. Both read the same table, and the generated tests
+  cover the Rust side.
 - Rust is the only target language so far; C is next.
