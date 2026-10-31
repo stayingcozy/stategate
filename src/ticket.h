@@ -6,8 +6,9 @@
 #define TICKETS_DIR ".fsm/tickets"
 #define MAX_FAILURES 3
 
-/* A scoped unit of work for one agent. Status: open | active | done |
- * locked | split. At most one ticket is active or locked at a time. */
+/* A scoped unit of work for one agent. Status: open | approved | active |
+ * done | locked | split. At most one ticket is active or locked at a time;
+ * approved tickets wait in id order and start one by one. */
 typedef struct {
     char *file;
     char *id, *title, *step, *status, *base;

@@ -16,7 +16,7 @@ static int usage(void) {
             "  gen                generate Rust wiring, tests and the manifest; scaffold node files\n"
             "  gate [--release]   run all 11 checks and write .fsm/gate.json\n"
             "  signoff            architect only: approve the current locked items\n"
-            "  ticket ...         list | new <id> ... | check [<id>] | start <id> | done <id>\n"
+            "  ticket ...         list | new <id> ... | check [<id>] | start [<id>] | next | done <id>\n"
             "                     | split <id> \"title\" \"title\" ...   (start and split: architect only)\n"
             "  export mermaid     print the machine as a Mermaid state diagram\n");
     return 2;

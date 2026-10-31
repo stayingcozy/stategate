@@ -39,7 +39,10 @@ Tickets for the next step:
 ```sh
 stategate ticket new T002 --title "Real tilt threshold" --step step1 \
     --node imu_posture --file src/services/imu_posture.rs --file 'tests/logic_*.rs'
-stategate ticket start T002      # you, at a terminal: review and type 'approve'
+stategate ticket new T003 --title "Stronger nudge" --step step1 \
+    --node start_nudge --file src/actions/start_nudge.rs
+stategate ticket start           # you, at a terminal: approve or skip each one
+stategate ticket list            # T002 active, T003 approved (next in line)
 ```
 
 The simulation runs Step 0 on fake hardware:
@@ -85,12 +88,16 @@ which CI uses as a smoke test.
    which checks each ticket against the model (the step and nodes exist, no
    generated file, model or `.fsm/` is granted) and writes it as `open`.
    `AGENTS.md` (written by `stategate init`) describes both agent roles.
-5. **You approve one** with `stategate ticket start T002`. It shows the
-   ticket's nodes and files and asks you to type `approve` at a terminal,
-   then records the base commit and a hash of what you approved.
-6. **An implementer agent works that ticket**, touching only the files it
-   lists. Hand-setting a ticket to `active`, or widening its files after
-   you approved it, turns the gate red.
+5. **You approve them** with `stategate ticket start`. It walks through every
+   open ticket, showing its nodes and files, and you type `approve` or `skip`
+   for each at a terminal. Approved tickets queue in id order and the first
+   one starts. `stategate ticket start T002` approves and starts just one.
+6. **An implementer agent works the active ticket**, touching only the files
+   it lists. When the gate is green it commits and runs `stategate ticket
+   done`, which starts the next approved ticket from that commit. If the
+   work isn't committed yet, `stategate ticket next` starts it afterwards.
+   Hand-setting a ticket to `active`, or changing one after you approved it,
+   turns the gate red or keeps it from starting.
 7. **The gate decides.** Run `stategate gate` after every change; `init`
    installs it as a pre-commit hook. Three failed runs lock the ticket until
    you approve a split with `stategate ticket split`.
@@ -127,8 +134,10 @@ Checks run in order and stop at the first failure.
   terminal. That stops an agent from approving by accident, not one that sets
   out to fake a terminal or to compute the approval hash itself. Real
   protection (signed commits, a key only you hold) comes later.
-- The active ticket's own file is exempt from the scope check, so an agent
-  could edit its failure counter. Moving the counter out of reach comes later.
+- Ticket files are exempt from the scope check, because they change as the
+  queue moves; their approval hashes guard them instead. That means an agent
+  could edit the active ticket's failure counter. Moving the counter out of
+  reach comes later.
 - Flat states only; no nesting, parallel regions or history yet.
 - The viewer's simulator follows the model's transition table in C, separately
   from the generated Rust. Both read the same table, and the generated tests
