@@ -17,15 +17,18 @@ You turn the model's next step into small tickets. You never write code.
 - Keep each ticket small: one behaviour, the fewest files that can deliver it, and the
   test files that prove it (usually `tests/logic_*.rs`).
 - Never grant generated files, the model or `.fsm/`; `ticket new` refuses them.
-- Run `stategate ticket check` when you are done, then stop. Only the architect starts
-  a ticket, by approving it at a terminal with `stategate ticket start <id>`. Never set
-  a ticket's status, base or approval yourself, and never edit a ticket that is not `open`.
+- Run `stategate ticket check` when you are done, then stop. Only the architect approves
+  tickets, at a terminal with `stategate ticket start`. Approved tickets then run one at
+  a time in id order. Never set a ticket's status, base or approval yourself, and never
+  edit a ticket that is not `open`.
 
 ## Implementer
 
 1. Work only on the ticket in `.fsm/tickets/` whose status is `active`. Touch only the
    files its `files:` list allows, plus `CHANGELOG.md`. If there is no active ticket, stop:
    the architect has not approved one yet.
+   When the gate is green, commit your work, then run `stategate ticket done <id>`. It
+   starts the next approved ticket, if any; carry on with that one the same way.
 2. Never edit generated files (anything starting with `@generated`), the model, or
    anything else in `.fsm/`, including the ticket. The gate detects it.
 3. Keep the trace tags at the top of each action and service file (`@action`,

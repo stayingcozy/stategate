@@ -162,5 +162,72 @@ git add -A && git -c user.name=t -c user.email=t@t commit -qm "ticket from the w
 architect approve ticket start T900 > /dev/null
 expect "ticket from ticket new, approved by the architect, is green" ""
 
+# The queue: review every open ticket at once, then work them in order.
+
+# second_ticket: adds T901 (open) and its changelog entry, and commits.
+second_ticket() {
+    "$SG" ticket new T901 --title "second" --step step0 --node imu_posture \
+        --file src/services/imu_posture.rs --file 'tests/logic_*.rs' > /dev/null
+    printf '\n## T901\nTouches imu_posture.\n' >> CHANGELOG.md
+    git add -A && git -c user.name=t -c user.email=t@t commit -qm "second ticket"
+}
+status_of() { sed -n 's/^status: //p' ".fsm/tickets/$1.yaml"; }
+
+setup --no-start
+second_ticket
+printf 'approve\nskip\n' | script -qec "$SG ticket start" /dev/null > /dev/null
+if [ "$(status_of T900)" = active ] && [ "$(status_of T901)" = open ]; then
+    ok "review approves one ticket, skips the other, starts the first"
+else
+    bad "review approves one ticket, skips the other, starts the first" "T900 $(status_of T900), T901 $(status_of T901)"
+fi
+
+setup --no-start
+second_ticket
+printf 'approve\napprove\n' | script -qec "$SG ticket start" /dev/null > /dev/null
+"$SG" gate > /dev/null 2>&1 || true
+git add -A && git -c user.name=t -c user.email=t@t commit -qm "T900 work"
+out=$("$SG" ticket done T900 2>&1 || true)
+if [ "$(status_of T900)" = done ] && [ "$(status_of T901)" = active ]; then ok "done starts the next approved ticket"
+else bad "done starts the next approved ticket" "T900 $(status_of T900), T901 $(status_of T901)"; fi
+expect "the next ticket starts green" ""
+
+setup --no-start
+second_ticket
+printf 'approve\napprove\n' | script -qec "$SG ticket start" /dev/null > /dev/null
+sed -i 's|^files:|files:\n  - "src/**"|' .fsm/tickets/T901.yaml
+"$SG" gate > /dev/null 2>&1 || true
+git add -A && git -c user.name=t -c user.email=t@t commit -qm "T900 work"
+out=$("$SG" ticket done T900 2>&1 || true)
+if echo "$out" | grep -q "changed after the architect approved it" && [ "$(status_of T901)" = approved ]; then
+    ok "a queued ticket widened after approval does not start"
+else
+    bad "a queued ticket widened after approval does not start" "T901 $(status_of T901)"
+fi
+
+setup --no-start
+second_ticket
+printf 'approve\napprove\n' | script -qec "$SG ticket start" /dev/null > /dev/null
+echo "// done" >> src/actions/start_nudge.rs
+"$SG" gate > /dev/null 2>&1 || true
+out=$("$SG" ticket done T900 2>&1 || true)
+if echo "$out" | grep -q "commit the finished work first" && [ "$(status_of T901)" = approved ]; then
+    ok "the next ticket waits for the finished work to be committed"
+else
+    bad "the next ticket waits for the finished work to be committed" "T901 $(status_of T901)"
+fi
+git add -A && git -c user.name=t -c user.email=t@t commit -qm "T900 work"
+"$SG" ticket next > /dev/null 2>&1 || true
+if [ "$(status_of T901)" = active ]; then ok "ticket next starts it after the commit"; else bad "ticket next starts it after the commit" "T901 $(status_of T901)"; fi
+
+setup --no-start
+second_ticket
+out=$("$SG" ticket start < /dev/null 2>&1 || true)
+if echo "$out" | grep -q "needs the architect" && [ "$(status_of T900)" = open ]; then
+    ok "review refused without the architect"
+else
+    bad "review refused without the architect" "expected refusal"
+fi
+
 echo "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

@@ -13,8 +13,27 @@
 static const char *const TICKET_KEYS[] = {"id", "title", "step", "status", "base", "approval",
                                           "failures", "nodes", "files", NULL};
 
+/* Natural order, so T9 comes before T10 and T2.1 before T2.10: the queue
+ * of approved tickets runs in this order. */
+static int cmp_ids(const char *a, const char *b) {
+    while (*a && *b) {
+        if (isdigit((unsigned char)*a) && isdigit((unsigned char)*b)) {
+            char *ea, *eb;
+            unsigned long na = strtoul(a, &ea, 10), nb = strtoul(b, &eb, 10);
+            if (na != nb) return na < nb ? -1 : 1;
+            a = ea;
+            b = eb;
+        } else {
+            if (*a != *b) return (unsigned char)*a - (unsigned char)*b;
+            a++;
+            b++;
+        }
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
 static int cmp_ticket(const void *a, const void *b) {
-    return strcmp(((const Ticket *)a)->id, ((const Ticket *)b)->id);
+    return cmp_ids(((const Ticket *)a)->id, ((const Ticket *)b)->id);
 }
 
 int tickets_load(Tickets *ts, StrList *errors) {
@@ -55,10 +74,10 @@ int tickets_load(Tickets *ts, StrList *errors) {
         if (!t->status) t->status = xstrdup("open");
         if (!t->base) t->base = xstrdup("");
         if (!t->approval) t->approval = xstrdup("");
-        const char *ok[] = {"open", "active", "done", "locked", "split", NULL};
+        const char *ok[] = {"open", "approved", "active", "done", "locked", "split", NULL};
         int good = 0;
         for (int i = 0; ok[i]; i++) if (!strcmp(ok[i], t->status)) good = 1;
-        if (!good) y_err(&r, root, "status must be open, active, done, locked or split");
+        if (!good) y_err(&r, root, "status must be open, approved, active, done, locked or split");
         y_free(&r);
     }
     closedir(d);
@@ -127,7 +146,9 @@ static int ticket_usage(void) {
             "usage: stategate ticket list\n"
             "       stategate ticket new <id> --title \"...\" --step <step> --node <id>... --file <glob>...\n"
             "       stategate ticket check [<id>]\n"
-            "       stategate ticket start <id>      (architect only: approves the ticket)\n"
+            "       stategate ticket start           (architect only: review every open ticket)\n"
+            "       stategate ticket start <id>      (architect only: approve and start one ticket)\n"
+            "       stategate ticket next            (start the next approved ticket)\n"
             "       stategate ticket done <id>\n"
             "       stategate ticket split <id> \"<sub-step title>\" \"<sub-step title>\" ...\n");
     return 2;
@@ -193,6 +214,107 @@ static int ticket_new(int argc, char **argv, Tickets *ts, const char *model_path
     return 0;
 }
 
+/* The architect approved t as it stands. Its base is still empty; the
+ * approval is re-hashed with the base when the ticket starts. */
+static void approve(Ticket *t) {
+    char hash[65];
+    t->base = xstrdup("");
+    ticket_approval_hash(t, hash);
+    t->approval = xstrdup(hash);
+    t->status = xstrdup("approved");
+    ticket_save(t);
+}
+
+/* Starts an approved ticket from HEAD. No terminal needed: the architect
+ * approved it already, and the stored hash proves the ticket is unchanged
+ * since then. Returns 1 when the ticket is now active. */
+static int activate(Ticket *t, const char *model_path) {
+    char hash[65];
+    char *saved_base = t->base;
+    t->base = "";
+    ticket_approval_hash(t, hash);
+    t->base = saved_base;
+    if (!t->approval || strcmp(hash, t->approval)) {
+        fprintf(stderr, "ticket %s changed after the architect approved it; it needs approving again\n", t->id);
+        return 0;
+    }
+    if (!need_model(model_path)) return 0;
+    if (print_lint(model_path, t)) { fprintf(stderr, "ticket %s no longer fits the model; not started\n", t->id); return 0; }
+    int st;
+    char *dirty = run_capture("git status --porcelain -- . ':(exclude)" TICKETS_DIR "' 2>&1", &st);
+    if (st != 0) { fprintf(stderr, "ticket start needs a git repository: %s", dirty); return 0; }
+    if (*dirty) {
+        fprintf(stderr, "not starting %s: commit the finished work first, then run stategate ticket next\n%s", t->id, dirty);
+        return 0;
+    }
+    char *head = run_capture("git rev-parse HEAD 2>/dev/null", &st);
+    head[strcspn(head, "\n")] = 0;
+    if (st != 0 || !*head) { fprintf(stderr, "ticket start needs a git repository with at least one commit\n"); return 0; }
+    t->base = head;
+    t->status = xstrdup("active");
+    t->failures = 0;
+    ticket_approval_hash(t, hash);
+    t->approval = xstrdup(hash);
+    ticket_save(t);
+    printf("%s active from %.12s: %s\n", t->id, t->base, t->title);
+    return 1;
+}
+
+/* Starts the first approved ticket in id order, if there is one. */
+static int start_next(Tickets *ts, const char *model_path) {
+    for (int i = 0; i < ts->n; i++)
+        if (!strcmp(ts->v[i].status, "approved")) return activate(&ts->v[i], model_path) ? 0 : 1;
+    printf("no approved tickets waiting\n");
+    return 0;
+}
+
+/* Reads one answer at a terminal: 'a'pprove, 's'kip or 'q'uit. */
+static char ask_review(void) {
+    for (;;) {
+        printf("approve / skip / quit? ");
+        fflush(stdout);
+        char line[64];
+        if (!fgets(line, sizeof line, stdin)) return 'q';
+        line[strcspn(line, "\n")] = 0;
+        if (!strcmp(line, "approve")) return 'a';
+        if (!strcmp(line, "skip") || !strcmp(line, "s")) return 's';
+        if (!strcmp(line, "quit") || !strcmp(line, "q")) return 'q';
+        printf("type approve, skip or quit\n");
+    }
+}
+
+/* `ticket start` with no id: the architect reviews every open ticket in
+ * turn. Approved ones join the queue; the first starts when nothing is in
+ * progress, and `ticket done` starts each next one. */
+static int review_open(Tickets *ts, const char *model_path) {
+    if (!need_model(model_path)) return 2;
+    int open = 0;
+    for (int i = 0; i < ts->n; i++) open += !strcmp(ts->v[i].status, "open");
+    if (!open) printf("no open tickets to review\n");
+    else if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "refused: this needs the architect at an interactive terminal\n");
+        return 1;
+    }
+    int approved = 0, seen = 0;
+    for (int i = 0; i < ts->n && open; i++) {
+        Ticket *t = &ts->v[i];
+        if (strcmp(t->status, "open")) continue;
+        printf("\n[%d/%d] ", ++seen, open);
+        print_ticket(t);
+        if (print_lint(model_path, t)) { printf("skipped: fix the problems above first\n"); continue; }
+        char c = ask_review();
+        if (c == 'q') break;
+        if (c == 'a') { approve(t); approved++; printf("%s approved\n", t->id); }
+    }
+    if (open) printf("\n%d approved\n", approved);
+    Ticket *cur = ticket_current(ts);
+    if (cur) {
+        printf("%s is %s; the queue continues when it is done\n", cur->id, cur->status);
+        return 0;
+    }
+    return start_next(ts, model_path);
+}
+
 int cmd_ticket(int argc, char **argv, const char *model_path) {
     if (argc < 1) return ticket_usage();
     StrList errors = {0};
@@ -205,7 +327,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
     if (!strcmp(sub, "list")) {
         if (!ts.n) printf("no tickets in %s\n", TICKETS_DIR);
         for (int i = 0; i < ts.n; i++)
-            printf("%-10s %-7s fails %d/%d  %s\n", ts.v[i].id, ts.v[i].status, ts.v[i].failures, MAX_FAILURES,
+            printf("%-10s %-8s fails %d/%d  %s\n", ts.v[i].id, ts.v[i].status, ts.v[i].failures, MAX_FAILURES,
                    ts.v[i].title);
         return 0;
     }
@@ -223,6 +345,12 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
         if (!n) printf("no open tickets\n");
         return bad;
     }
+    if (!strcmp(sub, "start") && argc < 2) return review_open(&ts, model_path);
+    if (!strcmp(sub, "next")) {
+        Ticket *cur = ticket_current(&ts);
+        if (cur) { fprintf(stderr, "ticket %s is %s; finish or split it first\n", cur->id, cur->status); return 1; }
+        return start_next(&ts, model_path);
+    }
     if (argc < 2) return ticket_usage();
     if (!strcmp(sub, "new")) return ticket_new(argc, argv, &ts, model_path);
     Ticket *t = ticket_find(&ts, argv[1]);
@@ -231,6 +359,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
     if (!strcmp(sub, "start")) {
         Ticket *cur = ticket_current(&ts);
         if (cur && cur != t) { fprintf(stderr, "ticket %s is %s; finish or split it first\n", cur->id, cur->status); return 1; }
+        if (!strcmp(t->status, "approved")) return activate(t, model_path) ? 0 : 1;
         if (strcmp(t->status, "open")) { fprintf(stderr, "ticket %s is %s, not open\n", t->id, t->status); return 1; }
         if (!need_model(model_path)) return 2;
         if (print_lint(model_path, t)) { fprintf(stderr, "ticket %s cannot be started; fix it first\n", t->id); return 1; }
@@ -238,19 +367,8 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
         print_ticket(t);
         printf("\n");
         if (!confirm_by_typing("approve")) { fprintf(stderr, "not approved; %s stays open\n", t->id); return 1; }
-        int st;
-        char *head = run_capture("git rev-parse HEAD 2>/dev/null", &st);
-        head[strcspn(head, "\n")] = 0;
-        if (st != 0 || !*head) { fprintf(stderr, "ticket start needs a git repository with at least one commit\n"); return 1; }
-        t->base = head;
-        t->status = xstrdup("active");
-        t->failures = 0;
-        char hash[65];
-        ticket_approval_hash(t, hash);
-        t->approval = xstrdup(hash);
-        ticket_save(t);
-        printf("%s approved and active from %.12s\n", t->id, t->base);
-        return 0;
+        approve(t);
+        return activate(t, model_path) ? 0 : 1;
     }
     if (!strcmp(sub, "done")) {
         if (strcmp(t->status, "active")) { fprintf(stderr, "ticket %s is %s, not active\n", t->id, t->status); return 1; }
@@ -264,7 +382,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
         t->status = xstrdup("done");
         ticket_save(t);
         printf("%s done\n", t->id);
-        return 0;
+        return start_next(&ts, model_path);
     }
     if (!strcmp(sub, "split")) {
         if (argc < 4) { fprintf(stderr, "a split needs at least two sub-step titles\n"); return 2; }

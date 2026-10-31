@@ -365,14 +365,15 @@ static void check_scope(const SgModel *m, const GenSet *g, const Ticket *t, StrL
     sb_puts(&all, "\n");
     sb_puts(&all, untracked);
 
-    char own_ticket[512];
-    snprintf(own_ticket, sizeof own_ticket, "%s/%s.yaml", TICKETS_DIR, t->id);
     int n = 0;
     char *save = NULL;
     for (char *p = strtok_r(all.s, "\n", &save); p; p = strtok_r(NULL, "\n", &save)) {
         if (!*p) continue;
         n++;
-        if (!strcmp(p, CHANGELOG) || !strcmp(p, own_ticket)) continue;
+        /* Ticket files change as the queue moves (done, next). Each is
+         * guarded by its approval hash instead: the active one here, the
+         * queued ones when they start. */
+        if (!strcmp(p, CHANGELOG) || !strncmp(p, TICKETS_DIR "/", strlen(TICKETS_DIR) + 1)) continue;
         if (!matches_any(&t->files, p)) sl_pushf(e, "%s is outside ticket %s's scope", p, t->id);
     }
     sl_pushf(notes, "%d changed file(s) since %.12s", n, t->base);
@@ -572,13 +573,16 @@ static const char *AGENTS_MD =
     "- Keep each ticket small: one behaviour, the fewest files that can deliver it, and the\n"
     "  test files that prove it (usually `tests/logic_*.rs`).\n"
     "- Never grant generated files, the model or `.fsm/`; `ticket new` refuses them.\n"
-    "- Run `stategate ticket check` when you are done, then stop. Only the architect starts\n"
-    "  a ticket, by approving it at a terminal with `stategate ticket start <id>`. Never set\n"
-    "  a ticket's status, base or approval yourself, and never edit a ticket that is not `open`.\n\n"
+    "- Run `stategate ticket check` when you are done, then stop. Only the architect approves\n"
+    "  tickets, at a terminal with `stategate ticket start`. Approved tickets then run one at\n"
+    "  a time in id order. Never set a ticket's status, base or approval yourself, and never\n"
+    "  edit a ticket that is not `open`.\n\n"
     "## Implementer\n\n"
     "1. Work only on the ticket in `.fsm/tickets/` whose status is `active`. Touch only the\n"
     "   files its `files:` list allows, plus `CHANGELOG.md`. If there is no active ticket, stop:\n"
     "   the architect has not approved one yet.\n"
+    "   When the gate is green, commit your work, then run `stategate ticket done <id>`. It\n"
+    "   starts the next approved ticket, if any; carry on with that one the same way.\n"
     "2. Never edit generated files (anything starting with `@generated`), the model, or\n"
     "   anything else in `.fsm/`, including the ticket. The gate detects it.\n"
     "3. Keep the trace tags at the top of each action and service file (`@action`,\n"
