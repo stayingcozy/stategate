@@ -11,6 +11,7 @@
 typedef struct {
     char *file;
     char *id, *title, *step, *status, *base;
+    char *approval; /* set by `ticket start` when the architect approves */
     int failures;
     StrList nodes; /* node IDs the work changes; the changelog must name them */
     StrList files; /* globs the work may touch */
@@ -27,6 +28,13 @@ Ticket *ticket_find(Tickets *ts, const char *id);
 /* The ticket in force: status active or locked. NULL if none. */
 Ticket *ticket_current(Tickets *ts);
 
-int cmd_ticket(int argc, char **argv);
+/* Hash of everything the architect approves: id, step, base, nodes, files. */
+void ticket_approval_hash(const Ticket *t, char out[65]);
+/* Typed confirmation at an interactive terminal; 0 when refused. */
+int confirm_by_typing(const char *phrase);
+
+/* model_path may be NULL when no model was found; subcommands that need
+ * the model then refuse. */
+int cmd_ticket(int argc, char **argv, const char *model_path);
 
 #endif

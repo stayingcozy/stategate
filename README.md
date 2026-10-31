@@ -34,6 +34,14 @@ stategate gate                   # all 11 checks; writes .fsm/gate.json
 cargo run --example sim -- 15000 POWER_ON CALIBRATED
 ```
 
+Tickets for the next step:
+
+```sh
+stategate ticket new T002 --title "Real tilt threshold" --step step1 \
+    --node imu_posture --file src/services/imu_posture.rs --file 'tests/logic_*.rs'
+stategate ticket start T002      # you, at a terminal: review and type 'approve'
+```
+
 The simulation runs Step 0 on fake hardware:
 
 ```
@@ -73,10 +81,17 @@ which CI uses as a smoke test.
 3. **stategate generates** `src/gen/`, `tests/transitions.rs`,
    `tests/invariants.rs` and the manifest. It scaffolds one file per action
    and service once, tagged with node IDs, and never overwrites them.
-4. **An agent works one ticket** from `.fsm/tickets/`. `stategate ticket start
-   T001` records the base commit; the ticket lists the only files the agent
-   may touch. `AGENTS.md` (written by `stategate init`) gives agents the rules.
-5. **The gate decides.** Run `stategate gate` after every change; `init`
+4. **A ticket-writer agent proposes tickets.** It runs `stategate ticket new`,
+   which checks each ticket against the model (the step and nodes exist, no
+   generated file, model or `.fsm/` is granted) and writes it as `open`.
+   `AGENTS.md` (written by `stategate init`) describes both agent roles.
+5. **You approve one** with `stategate ticket start T002`. It shows the
+   ticket's nodes and files and asks you to type `approve` at a terminal,
+   then records the base commit and a hash of what you approved.
+6. **An implementer agent works that ticket**, touching only the files it
+   lists. Hand-setting a ticket to `active`, or widening its files after
+   you approved it, turns the gate red.
+7. **The gate decides.** Run `stategate gate` after every change; `init`
    installs it as a pre-commit hook. Three failed runs lock the ticket until
    you approve a split with `stategate ticket split`.
 
@@ -94,7 +109,7 @@ Checks run in order and stop at the first failure.
 | 6 | no_wildcards | generated code contains a `_ =>` match arm |
 | 7 | trace_tags | an action or service file lacks its `@action`/`@service`/`@node` tags |
 | 8 | stubs | a locked item is a stub; with `--release`, any stub remains |
-| 9 | ticket_scope | a file outside the active ticket changed, or the ticket is locked |
+| 9 | ticket_scope | a file outside the active ticket changed, the ticket wasn't approved or changed after approval, or it is locked |
 | 10 | changelog | `CHANGELOG.md` has no `## <ticket>` entry naming the ticket's node IDs |
 | 11 | tests | `cargo test` fails |
 
@@ -108,9 +123,10 @@ Checks run in order and stop at the first failure.
 
 ## Known limits
 
-- Sign-off and ticket splits ask for typed confirmation at a terminal. That
-  stops an agent from approving by accident, not one that sets out to fake a
-  terminal. Real protection (signed commits, a key only you hold) comes later.
+- Sign-off, ticket approval and ticket splits ask for typed confirmation at a
+  terminal. That stops an agent from approving by accident, not one that sets
+  out to fake a terminal or to compute the approval hash itself. Real
+  protection (signed commits, a key only you hold) comes later.
 - The active ticket's own file is exempt from the scope check, so an agent
   could edit its failure counter. Moving the counter out of reach comes later.
 - Flat states only; no nesting, parallel regions or history yet.
