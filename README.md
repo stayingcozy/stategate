@@ -34,17 +34,6 @@ stategate gate                   # all 11 checks; writes .fsm/gate.json
 cargo run --example sim -- 15000 POWER_ON CALIBRATED
 ```
 
-Tickets for the next step:
-
-```sh
-stategate ticket new T002 --title "Real tilt threshold" --step step1 \
-    --node imu_posture --file src/services/imu_posture.rs --file 'tests/logic_*.rs'
-stategate ticket new T003 --title "Stronger nudge" --step step1 \
-    --node start_nudge --file src/actions/start_nudge.rs
-stategate ticket start           # you, at a terminal: approve or skip each one
-stategate ticket list            # T002 active, T003 approved (next in line)
-```
-
 The simulation runs Step 0 on fake hardware:
 
 ```
@@ -54,6 +43,41 @@ The simulation runs Step 0 on fake hardware:
    13.0s  posture.Slouching --GRACE_ELAPSED--> posture.Nudging
    13.0s  NUDGE
    14.5s  posture.Nudging --NUDGE_DONE--> posture.Slouching
+```
+
+## A new project, end to end
+
+Every step is a command, so a future app or an MCP server can drive the same
+flow. `you` steps happen at your terminal; `AI` steps work with any assistant.
+
+```sh
+# you: set up and design
+mkdir blinky && cd blinky && git init
+#   write blinky.yaml (see examples/posture/posture.yaml)
+stategate init                 # AGENTS.md, CLAUDE.md, CHANGELOG.md, pre-commit hook
+stategate validate             # checks 1-3
+stategate-view .               # live view while you edit
+stategate gen                  # Rust wiring, transition tests, node stubs
+stategate signoff              # only when the model has locked items
+git add -A && git commit -m "model"
+
+# no AI: ticket skeletons
+stategate ticket gen           # one draft per stub node: node, step and files filled in
+
+# AI: fill in each draft (the ticket-writer role in AGENTS.md)
+stategate ticket fill T001 --title "..." --goal "..."    # draft becomes open
+stategate ticket check
+git add -A && git commit -m "tickets"
+
+# you: approve or skip each one
+stategate ticket start         # approved tickets queue; the first one starts
+
+# AI: implement the active ticket, until green (the implementer role)
+stategate ticket prompt        # goal, node, allowed files, current code, last errors
+#   ...the AI edits the allowed files...
+stategate ticket run           # green: commit, done, next ticket starts
+                               # red: errors saved to the ticket; prompt again
+# you, after 3 reds: stategate ticket split T001 "..." "..."
 ```
 
 ## The viewer
@@ -80,27 +104,33 @@ which CI uses as a smoke test.
    either handled under `on` or listed under `ignore`; a missing pair is an
    error. Safety rules are `locked` invariants.
 2. **You sign off locked items** with `stategate signoff`. Changing one later
-   turns the gate red until you sign off again.
+   turns the gate red until you sign off again. A model with nothing locked
+   needs no sign-off.
 3. **stategate generates** `src/gen/`, `tests/transitions.rs`,
    `tests/invariants.rs` and the manifest. It scaffolds one file per action
    and service once, tagged with node IDs, and never overwrites them.
-4. **A ticket-writer agent proposes tickets.** It runs `stategate ticket new`,
-   which checks each ticket against the model (the step and nodes exist, no
-   generated file, model or `.fsm/` is granted) and writes it as `open`.
-   `AGENTS.md` (written by `stategate init`) describes both agent roles.
-5. **You approve them** with `stategate ticket start`. It walks through every
-   open ticket, showing its nodes and files, and you type `approve` or `skip`
-   for each at a terminal. Approved tickets queue in id order and the first
-   one starts. `stategate ticket start T002` approves and starts just one.
-6. **An implementer agent works the active ticket**, touching only the files
-   it lists. When the gate is green it commits and runs `stategate ticket
-   done`, which starts the next approved ticket from that commit. If the
-   work isn't committed yet, `stategate ticket next` starts it afterwards.
-   Hand-setting a ticket to `active`, or changing one after you approved it,
-   turns the gate red or keeps it from starting.
-7. **The gate decides.** Run `stategate gate` after every change; `init`
-   installs it as a pre-commit hook. Three failed runs lock the ticket until
-   you approve a split with `stategate ticket split`.
+4. **`stategate ticket gen` drafts the tickets**, with no AI: one per stub
+   action or service in the active step, with the node, step and files
+   (the node's file and `tests/logic_<node>.rs`) filled in.
+5. **A ticket-writer AI fills them in** with `stategate ticket fill <id>
+   --title ... --goal ...`, which turns a draft into an open ticket. It can't
+   change the node, step or files. `stategate ticket new` writes a ticket
+   from scratch, checked against the model the same way.
+6. **You approve them** with `stategate ticket start`. It walks through every
+   open ticket, showing its goal, nodes and files, and you type `approve` or
+   `skip` for each at a terminal. Approved tickets queue in id order and the
+   first one starts. `stategate ticket start T002` approves and starts one.
+7. **An implementer AI works the active ticket.** `stategate ticket prompt`
+   prints everything it needs as one block of Markdown: the goal, where the
+   node runs, the allowed files and their code, and the last errors.
+   `stategate ticket run` runs the gate: green commits the work, marks the
+   ticket done and starts the next one; red saves the errors into the ticket
+   for the next prompt. Three reds lock the ticket until you approve a split
+   with `stategate ticket split`. Hand-setting a ticket to `active`, or
+   changing one after you approved it, turns the gate red or keeps it from
+   starting.
+8. **The gate decides.** `ticket run` and the pre-commit hook both run all
+   11 checks; `stategate gate` runs them without committing anything.
 
 ## The gate
 
@@ -111,7 +141,7 @@ Checks run in order and stop at the first failure.
 | 1 | schema | the YAML has unknown keys, wrong types or missing fields |
 | 2 | statechart | no single initial state, an unreachable state, a dangling target, or a pair neither handled nor ignored |
 | 3 | invariants | a locked invariant doesn't hold on the model (e.g. a state ignores FAULT) |
-| 4 | signoff | locked items differ from what the architect signed |
+| 4 | signoff | locked items differ from what the architect signed (nothing locked: passes) |
 | 5 | drift | a generated file was edited by hand, or the model changed without `gen` |
 | 6 | no_wildcards | generated code contains a `_ =>` match arm |
 | 7 | trace_tags | an action or service file lacks its `@action`/`@service`/`@node` tags |

@@ -9,33 +9,33 @@ There are two agent roles. Do one per session and say which one you are doing.
 
 ## Ticket writer
 
-You turn the model's next step into small tickets. You never write code.
+You describe the work in tickets. You never write code.
 
-- Write each ticket with `stategate ticket new <id> --title "..." --step <step>
-  --node <node id> --file <path or glob>`, repeating `--node` and `--file` as needed.
-  It checks the ticket against the model and writes it as `open`.
-- Keep each ticket small: one behaviour, the fewest files that can deliver it, and the
-  test files that prove it (usually `tests/logic_*.rs`).
-- Never grant generated files, the model or `.fsm/`; `ticket new` refuses them.
-- Run `stategate ticket check` when you are done, then stop. Only the architect approves
-  tickets, at a terminal with `stategate ticket start`. Approved tickets then run one at
-  a time in id order. Never set a ticket's status, base or approval yourself, and never
-  edit a ticket that is not `open`.
+- `stategate ticket gen` (already run by the architect, or run it yourself) writes one
+  `draft` ticket per stub node with its node, step and files filled in.
+- For each draft, run `stategate ticket fill <id> --title "..." --goal "..."`. The goal
+  says what the node must do for this step, in a few sentences an implementer can test.
+  A filled draft becomes `open`. You cannot change a ticket's node, step or files.
+- For work `ticket gen` doesn't cover, write a ticket with `stategate ticket new <id>
+  --title "..." --goal "..." --step <step> --node <node id> --file <path or glob>`. Keep
+  it small: one behaviour, the fewest files, and the tests that prove it.
+- Run `stategate ticket check`, then stop. Only the architect approves tickets, at a
+  terminal with `stategate ticket start`. Never set a ticket's status, base or approval.
 
 ## Implementer
 
-1. Work only on the ticket in `.fsm/tickets/` whose status is `active`. Touch only the
-   files its `files:` list allows, plus `CHANGELOG.md`. If there is no active ticket, stop:
-   the architect has not approved one yet.
-   When the gate is green, commit your work, then run `stategate ticket done <id>`. It
-   starts the next approved ticket, if any; carry on with that one the same way.
+1. Run `stategate ticket prompt`. It prints the active ticket: goal, node, the files you
+   may change, their current code and the errors from the last failed run. Touch only
+   those files plus `CHANGELOG.md`. If there is no active ticket, stop.
+   When you are done, run `stategate ticket run`. Green commits the work, marks the
+   ticket done and starts the next approved one: run `ticket prompt` again and carry on.
+   Red saves the errors into the ticket: run `ticket prompt`, fix them, and run again.
 2. Never edit generated files (anything starting with `@generated`), the model, or
    anything else in `.fsm/`, including the ticket. The gate detects it.
 3. Keep the trace tags at the top of each action and service file (`@action`,
-   `@service`, `@node`). Leave `@stub` in place unless the ticket says to implement
-   that item for real.
-4. Run `stategate gate` after every change. Report its output as it is; never claim
-   something works when the gate says otherwise.
+   `@service`, `@node`). Remove `// @stub` once the node's logic is real.
+4. `stategate gate` runs the same checks without committing. Report gate output as it
+   is; never claim something works when the gate says otherwise.
 5. Add a `## <ticket id>` entry to `CHANGELOG.md` that names every node ID in the ticket.
 6. After 3 failed gate runs the ticket locks. Stop. Propose how to split it into
    smaller steps; the architect decides.
