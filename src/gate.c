@@ -117,7 +117,11 @@ int cmd_signoff(const char *model_path) {
         return 1;
     }
     char *canon = locked_canonical(&m);
-    printf("Locked items in %s:\n\n%s\n", model_path, *canon ? canon : "(none)\n");
+    if (!*canon) {
+        printf("Nothing in %s is locked, so there is nothing to sign off.\n", model_path);
+        return 0;
+    }
+    printf("Locked items in %s:\n\n%s\n", model_path, canon);
     char *old = read_file(SIGNOFF_PATH, NULL);
     char *hash = locked_hash(&m);
     if (old && strstr(old, hash)) { printf("Already signed off; nothing changed.\n"); return 0; }
@@ -504,6 +508,8 @@ int cmd_gate(const char *model_path, int release) {
         case C_SIGNOFF: {
             char *have = read_file(SIGNOFF_PATH, NULL);
             char *want = locked_hash(&m);
+            char *canon0 = locked_canonical(&m);
+            if (!*canon0) { sl_push(&notes[c], "nothing is locked: no sign-off needed"); break; }
             if (!have) sl_pushf(e, "no sign-off yet: the architect runs stategate signoff");
             else if (!strstr(have, want)) {
                 sl_pushf(e, "locked items changed since the architect signed off. Revert them, or the architect reviews and runs stategate signoff. Locked items now:");
@@ -532,10 +538,21 @@ int cmd_gate(const char *model_path, int release) {
     }
 
     int ok = failed < 0;
-    if (!ok && !release && t && !strcmp(t->status, "active")) {
-        t->failures++;
-        if (t->failures >= MAX_FAILURES) t->status = xstrdup("locked");
-        ticket_save(t);
+    if (!release && t && (!strcmp(t->status, "active") || !strcmp(t->status, "locked"))) {
+        /* The ticket keeps what the last run said, so `ticket prompt` can
+         * hand the errors to whichever AI fixes them. */
+        int had = t->errors.n;
+        memset(&t->errors, 0, sizeof t->errors);
+        if (!ok) {
+            sl_pushf(&t->errors, "check %d (%s) failed:", failed + 1, CHECK_NAMES[failed]);
+            for (int k = 0; k < res[failed].msgs.n && k < 60; k++) sl_push(&t->errors, res[failed].msgs.v[k]);
+            if (res[failed].msgs.n > 60) sl_pushf(&t->errors, "... %d more lines in .fsm/gate.json", res[failed].msgs.n - 60);
+            if (!strcmp(t->status, "active")) {
+                t->failures++;
+                if (t->failures >= MAX_FAILURES) t->status = xstrdup("locked");
+            }
+        }
+        if (!ok || had) ticket_save(t);
     }
     write_gate_json(ok, release, &m, t, stub_count, &stubs, res);
 
@@ -566,30 +583,30 @@ static const char *AGENTS_MD =
     "only `stategate gate` does.\n\n"
     "There are two agent roles. Do one per session and say which one you are doing.\n\n"
     "## Ticket writer\n\n"
-    "You turn the model's next step into small tickets. You never write code.\n\n"
-    "- Write each ticket with `stategate ticket new <id> --title \"...\" --step <step>\n"
-    "  --node <node id> --file <path or glob>`, repeating `--node` and `--file` as needed.\n"
-    "  It checks the ticket against the model and writes it as `open`.\n"
-    "- Keep each ticket small: one behaviour, the fewest files that can deliver it, and the\n"
-    "  test files that prove it (usually `tests/logic_*.rs`).\n"
-    "- Never grant generated files, the model or `.fsm/`; `ticket new` refuses them.\n"
-    "- Run `stategate ticket check` when you are done, then stop. Only the architect approves\n"
-    "  tickets, at a terminal with `stategate ticket start`. Approved tickets then run one at\n"
-    "  a time in id order. Never set a ticket's status, base or approval yourself, and never\n"
-    "  edit a ticket that is not `open`.\n\n"
+    "You describe the work in tickets. You never write code.\n\n"
+    "- `stategate ticket gen` (already run by the architect, or run it yourself) writes one\n"
+    "  `draft` ticket per stub node with its node, step and files filled in.\n"
+    "- For each draft, run `stategate ticket fill <id> --title \"...\" --goal \"...\"`. The goal\n"
+    "  says what the node must do for this step, in a few sentences an implementer can test.\n"
+    "  A filled draft becomes `open`. You cannot change a ticket's node, step or files.\n"
+    "- For work `ticket gen` doesn't cover, write a ticket with `stategate ticket new <id>\n"
+    "  --title \"...\" --goal \"...\" --step <step> --node <node id> --file <path or glob>`. Keep\n"
+    "  it small: one behaviour, the fewest files, and the tests that prove it.\n"
+    "- Run `stategate ticket check`, then stop. Only the architect approves tickets, at a\n"
+    "  terminal with `stategate ticket start`. Never set a ticket's status, base or approval.\n\n"
     "## Implementer\n\n"
-    "1. Work only on the ticket in `.fsm/tickets/` whose status is `active`. Touch only the\n"
-    "   files its `files:` list allows, plus `CHANGELOG.md`. If there is no active ticket, stop:\n"
-    "   the architect has not approved one yet.\n"
-    "   When the gate is green, commit your work, then run `stategate ticket done <id>`. It\n"
-    "   starts the next approved ticket, if any; carry on with that one the same way.\n"
+    "1. Run `stategate ticket prompt`. It prints the active ticket: goal, node, the files you\n"
+    "   may change, their current code and the errors from the last failed run. Touch only\n"
+    "   those files plus `CHANGELOG.md`. If there is no active ticket, stop.\n"
+    "   When you are done, run `stategate ticket run`. Green commits the work, marks the\n"
+    "   ticket done and starts the next approved one: run `ticket prompt` again and carry on.\n"
+    "   Red saves the errors into the ticket: run `ticket prompt`, fix them, and run again.\n"
     "2. Never edit generated files (anything starting with `@generated`), the model, or\n"
     "   anything else in `.fsm/`, including the ticket. The gate detects it.\n"
     "3. Keep the trace tags at the top of each action and service file (`@action`,\n"
-    "   `@service`, `@node`). Leave `@stub` in place unless the ticket says to implement\n"
-    "   that item for real.\n"
-    "4. Run `stategate gate` after every change. Report its output as it is; never claim\n"
-    "   something works when the gate says otherwise.\n"
+    "   `@service`, `@node`). Remove `// @stub` once the node's logic is real.\n"
+    "4. `stategate gate` runs the same checks without committing. Report gate output as it\n"
+    "   is; never claim something works when the gate says otherwise.\n"
     "5. Add a `## <ticket id>` entry to `CHANGELOG.md` that names every node ID in the ticket.\n"
     "6. After %d failed gate runs the ticket locks. Stop. Propose how to split it into\n"
     "   smaller steps; the architect decides.\n"

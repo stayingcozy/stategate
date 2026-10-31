@@ -229,5 +229,60 @@ else
     bad "review refused without the architect" "expected refusal"
 fi
 
+# The bring-your-own-AI loop: gen -> fill -> approve -> prompt -> run.
+
+fresh_tickets() {
+    setup --no-start
+    rm .fsm/tickets/T900.yaml
+    printf '# Changelog\n' > CHANGELOG.md
+    git add -A && git -c user.name=t -c user.email=t@t commit -qm "no tickets"
+    git config user.name t && git config user.email t@t
+}
+
+fresh_tickets
+"$SG" ticket gen > /dev/null
+out=$("$SG" ticket gen 2>&1)
+if [ "$(status_of T001)" = draft ] && [ "$(status_of T002)" = draft ] && grep -q '"src/actions/start_nudge.rs"' .fsm/tickets/T001.yaml \
+    && echo "$out" | grep -q "0 draft(s) written"; then
+    ok "ticket gen writes one draft per stub node, once"
+else
+    bad "ticket gen writes one draft per stub node, once" "unexpected drafts"
+fi
+out=$(printf 'approve\n' | script -qec "$SG ticket start T001" /dev/null 2>&1 || true)
+if echo "$out" | grep -q "is draft, not open"; then ok "a draft cannot be approved"; else bad "a draft cannot be approved" "expected refusal"; fi
+"$SG" ticket fill T001 --title "Nudge" > /dev/null 2>&1 || true
+"$SG" ticket fill T001 --goal "Log NUDGE and request intensity 5" > /dev/null 2>&1 || true
+out=$("$SG" ticket fill T001 --files 'src/**' 2>&1 || true)
+if [ "$(status_of T001)" = open ] && echo "$out" | grep -q "unknown option"; then
+    ok "ticket fill opens a draft and cannot change its files"
+else
+    bad "ticket fill opens a draft and cannot change its files" "T001 $(status_of T001)"
+fi
+git add -A && git commit -qm "filled"
+architect approve ticket start T001 > /dev/null
+out=$("$SG" ticket run 2>&1 || true)
+if [ "$(status_of T001)" = active ] && grep -q "has no entry '## T001'" .fsm/tickets/T001.yaml \
+    && "$SG" ticket prompt | grep -q "has no entry '## T001'"; then
+    ok "a red run keeps the ticket active and hands the errors to the prompt"
+else
+    bad "a red run keeps the ticket active and hands the errors to the prompt" "T001 $(status_of T001)"
+fi
+sed -i '/@stub/d' src/actions/start_nudge.rs
+printf '\n## T001\nstart_nudge logs NUDGE.\n' >> CHANGELOG.md
+out=$("$SG" ticket run 2>&1 || true)
+if [ "$(status_of T001)" = done ] && [ -z "$(git status --porcelain)" ] && git log -1 --format=%s | grep -q "^T001: Nudge"; then
+    ok "a green run commits the work and marks the ticket done"
+else
+    bad "a green run commits the work and marks the ticket done" "T001 $(status_of T001)"
+fi
+
+setup --no-start
+sed -i 's/locked: true, //; s/, locked: true//; s/{ locked: true, stub: false }/{ stub: false }/' posture.yaml
+rm -f .fsm/signoff.lock
+"$SG" gen > /dev/null
+out=$("$SG" gate 2>&1 || true)
+if echo "$out" | grep -q "nothing is locked: no sign-off needed"; then ok "no locked items, no sign-off needed"
+else bad "no locked items, no sign-off needed" "expected signoff to pass"; fi
+
 echo "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

@@ -10,8 +10,8 @@
 #include "gate.h"
 #include "ydoc.h"
 
-static const char *const TICKET_KEYS[] = {"id", "title", "step", "status", "base", "approval",
-                                          "failures", "nodes", "files", NULL};
+static const char *const TICKET_KEYS[] = {"id", "title", "goal", "step", "status", "base", "approval",
+                                          "failures", "nodes", "files", "errors", NULL};
 
 /* Natural order, so T9 comes before T10 and T2.1 before T2.10: the queue
  * of approved tickets runs in this order. */
@@ -61,6 +61,7 @@ int tickets_load(Tickets *ts, StrList *errors) {
         y_check_keys(&r, root, "ticket", TICKET_KEYS);
         t->id = y_str(&r, y_get(&r, root, "id"), "id");
         t->title = y_str(&r, y_get(&r, root, "title"), "title");
+        t->goal = y_str(&r, y_get(&r, root, "goal"), "goal");
         t->step = y_str(&r, y_get(&r, root, "step"), "step");
         t->status = y_str(&r, y_get(&r, root, "status"), "status");
         t->base = y_str(&r, y_get(&r, root, "base"), "base");
@@ -68,16 +69,18 @@ int tickets_load(Tickets *ts, StrList *errors) {
         t->failures = (int)y_int(&r, y_get(&r, root, "failures"), "failures", 0);
         y_strlist(&r, y_get(&r, root, "nodes"), "nodes", &t->nodes);
         y_strlist(&r, y_get(&r, root, "files"), "files", &t->files);
+        y_strlist(&r, y_get(&r, root, "errors"), "errors", &t->errors);
         if (!t->id) { y_err(&r, root, "ticket is missing 'id'"); t->id = xstrdup("?"); }
         if (!t->title) t->title = xstrdup("");
+        if (!t->goal) t->goal = xstrdup("");
         if (!t->step) t->step = xstrdup("");
         if (!t->status) t->status = xstrdup("open");
         if (!t->base) t->base = xstrdup("");
         if (!t->approval) t->approval = xstrdup("");
-        const char *ok[] = {"open", "approved", "active", "done", "locked", "split", NULL};
+        const char *ok[] = {"draft", "open", "approved", "active", "done", "locked", "split", NULL};
         int good = 0;
         for (int i = 0; ok[i]; i++) if (!strcmp(ok[i], t->status)) good = 1;
-        if (!good) y_err(&r, root, "status must be open, approved, active, done, locked or split");
+        if (!good) y_err(&r, root, "status must be draft, open, approved, active, done, locked or split");
         y_free(&r);
     }
     closedir(d);
@@ -85,27 +88,54 @@ int tickets_load(Tickets *ts, StrList *errors) {
     return errors->n == before ? 0 : -1;
 }
 
+/* YAML double-quoted scalar. */
+static void yaml_q(SB *b, const char *v) {
+    sb_puts(b, "\"");
+    for (const char *c = v ? v : ""; *c; c++) {
+        if (*c == '"' || *c == '\\') sb_printf(b, "\\%c", *c);
+        else if (*c == '\n') sb_puts(b, "\\n");
+        else if (*c == '\t') sb_puts(b, "\\t");
+        else if ((unsigned char)*c < 0x20) continue;
+        else sb_printf(b, "%c", *c);
+    }
+    sb_puts(b, "\"");
+}
+
 static void yaml_list(SB *b, const char *key, const StrList *l) {
     if (!l->n) { sb_printf(b, "%s: []\n", key); return; }
     sb_printf(b, "%s:\n", key);
-    for (int i = 0; i < l->n; i++) sb_printf(b, "  - \"%s\"\n", l->v[i]);
+    for (int i = 0; i < l->n; i++) {
+        sb_puts(b, "  - ");
+        yaml_q(b, l->v[i]);
+        sb_puts(b, "\n");
+    }
 }
 
 int ticket_save(const Ticket *t) {
     SB b;
     sb_init(&b);
-    sb_printf(&b, "id: %s\ntitle: \"%s\"\nstep: %s\nstatus: %s\nbase: \"%s\"\napproval: \"%s\"\nfailures: %d\n",
-              t->id, t->title, *t->step ? t->step : "\"\"", t->status, t->base, t->approval ? t->approval : "",
-              t->failures);
+    sb_printf(&b, "id: %s\ntitle: ", t->id);
+    yaml_q(&b, t->title);
+    sb_puts(&b, "\ngoal: ");
+    yaml_q(&b, t->goal);
+    sb_puts(&b, "\nstep: ");
+    yaml_q(&b, t->step);
+    sb_printf(&b, "\nstatus: %s\nbase: ", t->status);
+    yaml_q(&b, t->base);
+    sb_puts(&b, "\napproval: ");
+    yaml_q(&b, t->approval);
+    sb_printf(&b, "\nfailures: %d\n", t->failures);
     yaml_list(&b, "nodes", &t->nodes);
     yaml_list(&b, "files", &t->files);
+    yaml_list(&b, "errors", &t->errors);
     return write_file(t->file, b.s, b.len);
 }
 
 void ticket_approval_hash(const Ticket *t, char out[65]) {
     SB b;
     sb_init(&b);
-    sb_printf(&b, "id %s\nstep %s\nbase %s\n", t->id, t->step, t->base);
+    sb_printf(&b, "id %s\ntitle %s\ngoal %s\nstep %s\nbase %s\n", t->id, t->title, t->goal ? t->goal : "", t->step,
+              t->base);
     for (int i = 0; i < t->nodes.n; i++) sb_printf(&b, "node %s\n", t->nodes.v[i]);
     for (int i = 0; i < t->files.n; i++) sb_printf(&b, "file %s\n", t->files.v[i]);
     sha256_hex(b.s, b.len, out);
@@ -144,18 +174,24 @@ int confirm_by_typing(const char *phrase) {
 static int ticket_usage(void) {
     fprintf(stderr,
             "usage: stategate ticket list\n"
-            "       stategate ticket new <id> --title \"...\" --step <step> --node <id>... --file <glob>...\n"
+            "       stategate ticket gen             (one draft per stub node; no AI)\n"
+            "       stategate ticket fill <id> --title \"...\" --goal \"...\"   (draft becomes open)\n"
+            "       stategate ticket new <id> --title \"...\" --goal \"...\" --step <step> --node <id>... --file <glob>...\n"
             "       stategate ticket check [<id>]\n"
             "       stategate ticket start           (architect only: review every open ticket)\n"
             "       stategate ticket start <id>      (architect only: approve and start one ticket)\n"
             "       stategate ticket next            (start the next approved ticket)\n"
+            "       stategate ticket prompt [<id>]   (the active ticket as one block for any AI)\n"
+            "       stategate ticket run             (gate; green commits and starts the next ticket)\n"
             "       stategate ticket done <id>\n"
             "       stategate ticket split <id> \"<sub-step title>\" \"<sub-step title>\" ...\n");
     return 2;
 }
 
 static void print_ticket(const Ticket *t) {
-    printf("%s  \"%s\"\n  step:  %s\n  nodes:", t->id, t->title, t->step);
+    printf("%s  \"%s\"\n", t->id, t->title);
+    if (t->goal && *t->goal) printf("  goal:  %s\n", t->goal);
+    printf("  step:  %s\n  nodes:", t->step);
     for (int i = 0; i < t->nodes.n; i++) printf(" %s", t->nodes.v[i]);
     printf("\n  files the agent may change:\n");
     for (int i = 0; i < t->files.n; i++) printf("    %s\n", t->files.v[i]);
@@ -192,14 +228,15 @@ static int ticket_new(int argc, char **argv, Tickets *ts, const char *model_path
         if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a); return 2; }
         const char *v = argv[++i];
         if (!strcmp(a, "--title")) t.title = (char *)v;
+        else if (!strcmp(a, "--goal")) t.goal = (char *)v;
         else if (!strcmp(a, "--step")) t.step = (char *)v;
         else if (!strcmp(a, "--node")) sl_push(&t.nodes, v);
         else if (!strcmp(a, "--file")) sl_push(&t.files, v);
         else { fprintf(stderr, "unknown option %s\n", a); return ticket_usage(); }
     }
-    if (t.title && strpbrk(t.title, "\"\\\n")) { fprintf(stderr, "the title may not contain quotes, backslashes or newlines\n"); return 2; }
     if (ticket_find(ts, t.id)) { fprintf(stderr, "ticket %s already exists\n", t.id); return 1; }
     if (!t.title) t.title = "";
+    if (!t.goal) t.goal = "";
     if (!t.step) t.step = "";
     t.status = "open";
     t.base = "";
@@ -315,6 +352,260 @@ static int review_open(Tickets *ts, const char *model_path) {
     return start_next(ts, model_path);
 }
 
+/* ---- drafts: `ticket gen` and `ticket fill` ---- */
+
+/* A draft becomes open once it has a title and a goal and passes the model
+ * checks. Returns 1 when it is open now. */
+static int promote_draft(Ticket *t, const char *model_path) {
+    int missing = 0;
+    if (!t->title || !*t->title) { fprintf(stderr, "  ticket %s needs a title\n", t->id); missing = 1; }
+    if (!t->goal || !*t->goal) { fprintf(stderr, "  ticket %s needs a goal\n", t->id); missing = 1; }
+    if (missing || print_lint(model_path, t)) {
+        printf("%-10s draft: fill it in with stategate ticket fill %s --title \"...\" --goal \"...\"\n", t->id, t->id);
+        return 0;
+    }
+    t->status = xstrdup("open");
+    ticket_save(t);
+    printf("%-10s open: ready for the architect\n", t->id);
+    return 1;
+}
+
+static int has_stub_marker(const char *path) {
+    char *text = read_file(path, NULL);
+    int r = text && strstr(text, "// @stub") != NULL;
+    free(text);
+    return r;
+}
+
+/* Next free id of the form T001, T002, ... */
+static void next_id(const Tickets *ts, const StrList *made, char out[32]) {
+    int max = 0;
+    for (int i = 0; i < ts->n; i++)
+        if (ts->v[i].id[0] == 'T' && isdigit((unsigned char)ts->v[i].id[1])) {
+            int n = atoi(ts->v[i].id + 1);
+            if (n > max) max = n;
+        }
+    for (int i = 0; i < made->n; i++) {
+        int n = atoi(made->v[i] + 1);
+        if (n > max) max = n;
+    }
+    snprintf(out, 32, "T%03d", max + 1);
+}
+
+/* ticket gen: one draft per action or service that is still a stub and has
+ * no ticket for the active step yet (split parents don't count). Deterministic, no AI: it fills in the node, step and
+ * files and leaves the title and goal for the ticket writer. */
+static int ticket_gen(Tickets *ts, const char *model_path) {
+    if (!need_model(model_path)) return 2;
+    SgModel m;
+    memset(&m, 0, sizeof m);
+    StrList e = {0};
+    if (model_load(model_path, &m, &e) != 0) {
+        for (int i = 0; i < e.n; i++) fprintf(stderr, "%s\n", e.v[i]);
+        return 1;
+    }
+    const char *step = NULL;
+    for (int i = 0; i < m.n_steps; i++)
+        if (!strcmp(m.steps[i].status, "active")) { step = m.steps[i].id; break; }
+    if (!step) { fprintf(stderr, "the model has no active step; mark one step status: active\n"); return 1; }
+
+    StrList nodes = {0}, paths = {0};
+    char path[512];
+    for (int i = 0; i < m.n_actions; i++) {
+        snprintf(path, sizeof path, "src/actions/%s.rs", m.actions[i].id);
+        if (m.actions[i].stub || has_stub_marker(path)) { sl_push(&nodes, m.actions[i].id); sl_push(&paths, path); }
+    }
+    for (int i = 0; i < m.n_services; i++) {
+        snprintf(path, sizeof path, "src/services/%s.rs", m.services[i].id);
+        if (m.services[i].stub || has_stub_marker(path)) { sl_push(&nodes, m.services[i].id); sl_push(&paths, path); }
+    }
+    mkdirs(TICKETS_DIR);
+    StrList made = {0};
+    int skipped = 0;
+    for (int k = 0; k < nodes.n; k++) {
+        int covered = 0;
+        for (int i = 0; i < ts->n; i++)
+            if (strcmp(ts->v[i].status, "split") && !strcmp(ts->v[i].step, step) && sl_contains(&ts->v[i].nodes, nodes.v[k]))
+                covered = 1;
+        if (covered) { skipped++; continue; }
+        char id[32], file[512], test[512];
+        next_id(ts, &made, id);
+        snprintf(file, sizeof file, "%s/%s.yaml", TICKETS_DIR, id);
+        snprintf(test, sizeof test, "tests/logic_%s.rs", nodes.v[k]);
+        Ticket t;
+        memset(&t, 0, sizeof t);
+        t.id = id;
+        t.file = file;
+        t.title = "";
+        t.goal = "";
+        t.step = (char *)step;
+        t.status = "draft";
+        t.base = "";
+        t.approval = "";
+        sl_push(&t.nodes, nodes.v[k]);
+        sl_push(&t.files, paths.v[k]);
+        sl_push(&t.files, test);
+        if (ticket_save(&t) != 0) { fprintf(stderr, "cannot write %s\n", file); return 1; }
+        sl_push(&made, id);
+        printf("  draft %s  %s  (%s, %s)\n", id, nodes.v[k], paths.v[k], test);
+    }
+    printf("%d draft(s) written", made.n);
+    if (skipped) printf(", %d node(s) already have a ticket for %s", skipped, step);
+    printf(".%s\n", made.n ? " Next: the ticket writer fills each with stategate ticket fill <id> --title \"...\" --goal \"...\"" : "");
+    return 0;
+}
+
+/* ticket fill <id> --title T --goal G: the ticket writer's only edit. It
+ * cannot touch the node, step or files that `ticket gen` chose. */
+static int ticket_fill(int argc, char **argv, Tickets *ts, const char *model_path) {
+    if (!need_model(model_path)) return 2;
+    Ticket *t = ticket_find(ts, argv[1]);
+    if (!t) { fprintf(stderr, "no ticket %s\n", argv[1]); return 1; }
+    if (strcmp(t->status, "draft") && strcmp(t->status, "open")) {
+        fprintf(stderr, "ticket %s is %s; only draft and open tickets can be filled in\n", t->id, t->status);
+        return 1;
+    }
+    for (int i = 2; i < argc; i++) {
+        if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", argv[i]); return 2; }
+        if (!strcmp(argv[i], "--title")) t->title = argv[++i];
+        else if (!strcmp(argv[i], "--goal")) t->goal = argv[++i];
+        else { fprintf(stderr, "unknown option %s (fill takes --title and --goal)\n", argv[i]); return 2; }
+    }
+    ticket_save(t);
+    if (!strcmp(t->status, "draft")) return promote_draft(t, model_path) ? 0 : 1;
+    printf("%-10s updated\n", t->id);
+    return 0;
+}
+
+/* ---- the implementer's loop: `ticket prompt` and `ticket run` ---- */
+
+static void print_file_block(const char *path) {
+    char *text = read_file(path, NULL);
+    if (!text) { printf("\n### %s\n\n(does not exist yet; create it)\n", path); return; }
+    size_t n = strlen(text);
+    printf("\n### %s\n\n```rust\n%s%s```\n", path, text, n && text[n - 1] != '\n' ? "\n" : "");
+    free(text);
+}
+
+static void print_node_context(const SgModel *m, const char *id) {
+    Action *a = model_action(m, id);
+    Service *sv = model_service(m, id);
+    if (a) printf("- `%s` is an action%s%s%s\n", id, a->locked ? " (locked: a safety item, never stub or weaken it)" : "",
+                  a->note ? ". Note: " : "", a->note ? a->note : "");
+    if (sv) {
+        printf("- `%s` is a service (fidelity %s); it may emit:", id, sv->fidelity ? sv->fidelity : "?");
+        for (int k = 0; k < sv->emits.n; k++) printf(" %s", sv->emits.v[k]);
+        printf("%s%s\n", sv->note ? ". Note: " : "", sv->note ? sv->note : "");
+    }
+    for (int i = 0; i < m->n_states; i++) {
+        const State *s = &m->states[i];
+        if (sl_contains(&s->entry, id)) printf("- runs on entry to %s\n", s->id);
+        if (sl_contains(&s->exit, id)) printf("- runs on exit from %s\n", s->id);
+        if (sl_contains(&s->invoke, id)) printf("- runs while in %s\n", s->id);
+    }
+    if (model_state(m, id)) printf("- `%s` is a state\n", id);
+}
+
+/* ticket prompt [id]: everything an AI needs for the ticket in one block of
+ * Markdown, so any assistant can do the work from a paste. */
+static int ticket_prompt(Tickets *ts, const char *id, const char *model_path) {
+    if (!need_model(model_path)) return 2;
+    Ticket *t = id ? ticket_find(ts, id) : ticket_current(ts);
+    if (!t) {
+        fprintf(stderr, id ? "no ticket %s\n" : "no active ticket: the architect approves one with stategate ticket start\n", id);
+        return 1;
+    }
+    SgModel m;
+    memset(&m, 0, sizeof m);
+    StrList e = {0};
+    model_load(model_path, &m, &e);
+    const char *step_goal = "";
+    for (int i = 0; i < m.n_steps; i++)
+        if (!strcmp(m.steps[i].id, t->step)) step_goal = m.steps[i].goal;
+
+    printf("# Ticket %s: %s\n\n", t->id, t->title);
+    if (!strcmp(t->status, "locked")) {
+        printf("This ticket is LOCKED after %d failed gate runs. Do not change code. Propose to the\n"
+               "architect how to split it into smaller tickets.\n\n", t->failures);
+    } else if (strcmp(t->status, "active")) {
+        printf("Status: %s. Only an active ticket may be worked on.\n\n", t->status);
+    }
+    printf("## Goal\n\n%s\n\n", *t->goal ? t->goal : "(no goal written)");
+    printf("Step %s: %s\n\n", t->step, step_goal);
+    printf("## Nodes\n\n");
+    for (int i = 0; i < t->nodes.n; i++) print_node_context(&m, t->nodes.v[i]);
+    printf("\n## Files you may change\n\n");
+    for (int i = 0; i < t->files.n; i++) printf("- `%s`\n", t->files.v[i]);
+    printf("- `CHANGELOG.md`: add `## %s` naming", t->id);
+    for (int i = 0; i < t->nodes.n; i++) printf(" %s", t->nodes.v[i]);
+    printf("\n\nChange nothing else: not generated files, not `%s`, not `.fsm/`.\n", model_path);
+    printf("Keep the `@action`/`@service`/`@node` tags. Remove `// @stub` once the logic is real.\n");
+    printf("Node logic receives `SafeHal`, which enforces the safety limits.\n");
+    if (t->errors.n) {
+        printf("\n## The last gate run failed\n\nFix this first:\n\n```\n");
+        for (int i = 0; i < t->errors.n; i++) printf("%s\n", t->errors.v[i]);
+        printf("```\n\nFailed runs so far: %d of %d.\n", t->failures, MAX_FAILURES);
+    }
+    printf("\n## Current code\n");
+    for (int i = 0; i < t->files.n; i++) {
+        const char *f = t->files.v[i];
+        if (!strpbrk(f, "*?[")) { print_file_block(f); continue; }
+        int st;
+        char cmd[600];
+        snprintf(cmd, sizeof cmd, "git ls-files --cached --others --exclude-standard -- '%s' 2>/dev/null", f);
+        char *list = run_capture(cmd, &st);
+        char *save = NULL;
+        for (char *p = strtok_r(list, "\n", &save); p; p = strtok_r(NULL, "\n", &save)) print_file_block(p);
+    }
+    printf("\n## When you are done\n\nRun `stategate ticket run` and report its output as it is. Green finishes the\n"
+           "ticket. Red saves the errors into the ticket: run `stategate ticket prompt` again and fix them.\n");
+    return 0;
+}
+
+/* ticket run: the gate for the active ticket. Green commits the work, marks
+ * the ticket done and starts the next approved one. Red keeps the ticket
+ * active with the errors saved in it (the gate does that), until it locks. */
+static int ticket_run(const char *model_path) {
+    if (!need_model(model_path)) return 2;
+    StrList errors = {0};
+    Tickets ts;
+    tickets_load(&ts, &errors);
+    Ticket *t = ticket_current(&ts);
+    if (!t) { fprintf(stderr, "no active ticket: the architect approves one with stategate ticket start\n"); return 1; }
+    if (!strcmp(t->status, "locked")) {
+        fprintf(stderr, "ticket %s is locked. Propose a split; the architect runs stategate ticket split %s \"...\" \"...\"\n", t->id, t->id);
+        return 1;
+    }
+    char id[128];
+    snprintf(id, sizeof id, "%s", t->id);
+    int red = cmd_gate(model_path, 0);
+    tickets_load(&ts, &errors);
+    t = ticket_find(&ts, id);
+    if (red) {
+        if (t && !strcmp(t->status, "locked"))
+            printf("\n%s is locked. Propose a split to the architect.\n", id);
+        else
+            printf("\n%s stays active with the errors saved. Next: stategate ticket prompt, fix, stategate ticket run\n", id);
+        return 1;
+    }
+    t->status = xstrdup("done");
+    ticket_save(t);
+    char msg[600], cmd[800];
+    snprintf(msg, sizeof msg, "%s: %s", t->id, t->title);
+    for (char *c = msg; *c; c++) if (*c == '\'') *c = ' ';
+    snprintf(cmd, sizeof cmd, "git add -A -- . && git commit -q -m '%s' 2>&1", msg);
+    int st;
+    char *out = run_capture(cmd, &st);
+    if (st != 0) {
+        t->status = xstrdup("active");
+        ticket_save(t);
+        fprintf(stderr, "the gate is green but git commit failed, so %s stays active:\n%s", t->id, out);
+        return 1;
+    }
+    printf("\n%s done and committed.\n", t->id);
+    return start_next(&ts, model_path);
+}
+
 int cmd_ticket(int argc, char **argv, const char *model_path) {
     if (argc < 1) return ticket_usage();
     StrList errors = {0};
@@ -336,15 +627,21 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
         int bad = 0, n = 0;
         for (int i = 0; i < ts.n; i++) {
             Ticket *c = &ts.v[i];
-            if (argc >= 2 ? strcmp(c->id, argv[1]) != 0 : strcmp(c->status, "open") != 0) continue;
+            int pick = argc >= 2 ? !strcmp(c->id, argv[1]) : (!strcmp(c->status, "open") || !strcmp(c->status, "draft"));
+            if (!pick) continue;
             n++;
-            if (print_lint(model_path, c)) { printf("%-10s problems above\n", c->id); bad = 1; }
+            if (!strcmp(c->status, "draft")) {
+                if (!promote_draft(c, model_path)) bad = 1;
+            } else if (print_lint(model_path, c)) { printf("%-10s problems above\n", c->id); bad = 1; }
             else printf("%-10s ok\n", c->id);
         }
         if (argc >= 2 && !n) { fprintf(stderr, "no ticket %s\n", argv[1]); return 1; }
-        if (!n) printf("no open tickets\n");
+        if (!n) printf("no draft or open tickets\n");
         return bad;
     }
+    if (!strcmp(sub, "gen")) return ticket_gen(&ts, model_path);
+    if (!strcmp(sub, "prompt")) return ticket_prompt(&ts, argc >= 2 ? argv[1] : NULL, model_path);
+    if (!strcmp(sub, "run")) return ticket_run(model_path);
     if (!strcmp(sub, "start") && argc < 2) return review_open(&ts, model_path);
     if (!strcmp(sub, "next")) {
         Ticket *cur = ticket_current(&ts);
@@ -353,6 +650,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
     }
     if (argc < 2) return ticket_usage();
     if (!strcmp(sub, "new")) return ticket_new(argc, argv, &ts, model_path);
+    if (!strcmp(sub, "fill")) return ticket_fill(argc, argv, &ts, model_path);
     Ticket *t = ticket_find(&ts, argv[1]);
     if (!t) { fprintf(stderr, "no ticket %s\n", argv[1]); return 1; }
 
