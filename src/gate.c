@@ -17,7 +17,6 @@
 #define GATE_JSON ".fsm/gate.json"
 #define CHANGELOG "CHANGELOG.md"
 
-int confirm_by_typing(const char *phrase); /* ticket.c */
 
 static void print_errors(const char *title, const StrList *e) {
     if (!e->n) return;
@@ -290,12 +289,24 @@ static int matches_any(const StrList *globs, const char *path) {
     return 0;
 }
 
-static void check_scope(const SgModel *m, const GenSet *g, const Ticket *t, StrList *e, StrList *notes) {
-    if (!t) {
-        sl_push(notes, "no active ticket: scope not checked (architect mode)");
-        return;
+/* What a ticket may ask for, judged against the model. Shared by the gate
+ * and by `ticket new|check|start`, so a ticket writer gets the same answer
+ * the gate will give later. */
+static void lint_ticket(const SgModel *m, const GenSet *g, const Ticket *t, StrList *e) {
+    if (!t->title || !*t->title) sl_pushf(e, "ticket %s has no title", t->id);
+    if (!t->step || !*t->step) sl_pushf(e, "ticket %s names no step", t->id);
+    else {
+        int found = 0;
+        for (int i = 0; i < m->n_steps; i++) if (!strcmp(m->steps[i].id, t->step)) found = 1;
+        if (!found) sl_pushf(e, "ticket %s names step '%s', which is not in the model", t->id, t->step);
     }
-    /* The ticket itself may not grant protected files. */
+    if (!t->nodes.n) sl_pushf(e, "ticket %s names no nodes", t->id);
+    for (int i = 0; i < t->nodes.n; i++) {
+        const char *n = t->nodes.v[i];
+        if (!model_state(m, n) && !model_action(m, n) && !model_service(m, n))
+            sl_pushf(e, "ticket %s names node '%s', which is not a state, action or service in the model", t->id, n);
+    }
+    if (!t->files.n) sl_pushf(e, "ticket %s lists no files", t->id);
     StrList protected = {0};
     for (int i = 0; i < g->n; i++)
         if (!g->v[i].scaffold) sl_push(&protected, g->v[i].path);
@@ -308,7 +319,39 @@ static void check_scope(const SgModel *m, const GenSet *g, const Ticket *t, StrL
             if (fnmatch(t->files.v[i], protected.v[k], FNM_PATHNAME) == 0)
                 sl_pushf(e, "ticket %s grants '%s', which covers protected file %s", t->id, t->files.v[i], protected.v[k]);
     }
-    if (!t->base || !*t->base) { sl_pushf(e, "ticket %s has no base commit: run stategate ticket start %s", t->id, t->id); return; }
+}
+
+int ticket_lint(const char *model_path, const Ticket *t, StrList *errors) {
+    int before = errors->n;
+    SgModel m;
+    memset(&m, 0, sizeof m);
+    StrList e1 = {0}, e2 = {0}, e3 = {0};
+    if (validate_all(model_path, &m, &e1, &e2, &e3) != 0) {
+        sl_pushf(errors, "the model %s does not validate; run stategate validate", model_path);
+        return errors->n - before;
+    }
+    GenSet g = {0};
+    gen_rust(&m, &g);
+    lint_ticket(&m, &g, t, errors);
+    return errors->n - before;
+}
+
+static void check_scope(const SgModel *m, const GenSet *g, const Ticket *t, StrList *e, StrList *notes) {
+    if (!t) {
+        sl_push(notes, "no active ticket: scope not checked (architect mode)");
+        return;
+    }
+    lint_ticket(m, g, t, e);
+    if (!t->base || !*t->base || !t->approval || !*t->approval) {
+        sl_pushf(e, "ticket %s was never approved: the architect runs stategate ticket start %s at a terminal", t->id, t->id);
+        return;
+    }
+    char want[65];
+    ticket_approval_hash(t, want);
+    if (strcmp(want, t->approval)) {
+        sl_pushf(e, "ticket %s changed after the architect approved it (its step, base, nodes or files). Put it back, or the architect approves a new ticket", t->id);
+        return;
+    }
 
     char cmd[512];
     int st;
@@ -520,10 +563,24 @@ static const char *AGENTS_MD =
     "truth: code is generated from it, and changes flow model to code only. A deterministic\n"
     "gate decides whether work lands. Your description of your work does not count;\n"
     "only `stategate gate` does.\n\n"
+    "There are two agent roles. Do one per session and say which one you are doing.\n\n"
+    "## Ticket writer\n\n"
+    "You turn the model's next step into small tickets. You never write code.\n\n"
+    "- Write each ticket with `stategate ticket new <id> --title \"...\" --step <step>\n"
+    "  --node <node id> --file <path or glob>`, repeating `--node` and `--file` as needed.\n"
+    "  It checks the ticket against the model and writes it as `open`.\n"
+    "- Keep each ticket small: one behaviour, the fewest files that can deliver it, and the\n"
+    "  test files that prove it (usually `tests/logic_*.rs`).\n"
+    "- Never grant generated files, the model or `.fsm/`; `ticket new` refuses them.\n"
+    "- Run `stategate ticket check` when you are done, then stop. Only the architect starts\n"
+    "  a ticket, by approving it at a terminal with `stategate ticket start <id>`. Never set\n"
+    "  a ticket's status, base or approval yourself, and never edit a ticket that is not `open`.\n\n"
+    "## Implementer\n\n"
     "1. Work only on the ticket in `.fsm/tickets/` whose status is `active`. Touch only the\n"
-    "   files its `files:` list allows, plus `CHANGELOG.md`.\n"
+    "   files its `files:` list allows, plus `CHANGELOG.md`. If there is no active ticket, stop:\n"
+    "   the architect has not approved one yet.\n"
     "2. Never edit generated files (anything starting with `@generated`), the model, or\n"
-    "   anything else in `.fsm/`. The gate detects it.\n"
+    "   anything else in `.fsm/`, including the ticket. The gate detects it.\n"
     "3. Keep the trace tags at the top of each action and service file (`@action`,\n"
     "   `@service`, `@node`). Leave `@stub` in place unless the ticket says to implement\n"
     "   that item for real.\n"

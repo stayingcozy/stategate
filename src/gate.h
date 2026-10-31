@@ -2,6 +2,7 @@
 #define SG_GATE_H
 
 #include "model.h"
+#include "ticket.h"
 
 int cmd_validate(const char *model_path);
 int cmd_gen(const char *model_path);
@@ -12,5 +13,10 @@ int cmd_export_mermaid(const char *model_path);
 
 /* Canonical text of every locked item; its hash is what the architect signs. */
 char *locked_canonical(const SgModel *m);
+
+/* Checks a ticket against the model: its step and nodes exist, it lists
+ * files, and it grants nothing protected (.fsm/, the model, generated
+ * files). Appends one message per problem; returns the number added. */
+int ticket_lint(const char *model_path, const Ticket *t, StrList *errors);
 
 #endif

@@ -16,7 +16,8 @@ static int usage(void) {
             "  gen                generate Rust wiring, tests and the manifest; scaffold node files\n"
             "  gate [--release]   run all 11 checks and write .fsm/gate.json\n"
             "  signoff            architect only: approve the current locked items\n"
-            "  ticket ...         list | start <id> | done <id> | split <id> \"title\" \"title\" ...\n"
+            "  ticket ...         list | new <id> ... | check [<id>] | start <id> | done <id>\n"
+            "                     | split <id> \"title\" \"title\" ...   (start and split: architect only)\n"
             "  export mermaid     print the machine as a Mermaid state diagram\n");
     return 2;
 }
@@ -39,10 +40,13 @@ int main(int argc, char **argv) {
     if (i >= argc) return usage();
     const char *cmd = argv[i++];
 
-    if (!strcmp(cmd, "ticket")) return cmd_ticket(argc - i, argv + i);
-
     StrList errors = {0};
     char *found = NULL;
+    if (!strcmp(cmd, "ticket")) {
+        /* list, done and split work without a model; new, check and start need it. */
+        if (!model) model = model_find(".", &errors);
+        return cmd_ticket(argc - i, argv + i, model);
+    }
     if (!model) {
         found = model_find(".", &errors);
         if (!found) {
