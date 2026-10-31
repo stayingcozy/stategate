@@ -3,13 +3,14 @@
 #include <unistd.h>
 
 #include "gate.h"
+#include "mcp.h"
 #include "ticket.h"
+#include "version.h"
 
-#define VERSION "0.1.0"
 
 static int usage(void) {
     fprintf(stderr,
-            "stategate " VERSION " - model-first development with a deterministic gate\n\n"
+            "stategate " STATEGATE_VERSION " - model-first development with a deterministic gate\n\n"
             "usage: stategate [-C dir] [--model file.yaml] <command>\n\n"
             "  init               set up .fsm/, AGENTS.md, CHANGELOG.md and the pre-commit hook\n"
             "  validate           run gate checks 1-3 on the model\n"
@@ -19,7 +20,8 @@ static int usage(void) {
             "  ticket ...         gen | fill <id> ... | new <id> ... | check [<id>] | list\n"
             "                     start [<id>] | prompt [<id>] | run | next | done <id>\n"
             "                     split <id> \"title\" \"title\" ...   (start and split: architect only)\n"
-            "  export mermaid     print the machine as a Mermaid state diagram\n");
+            "  export mermaid     print the machine as a Mermaid state diagram\n"
+            "  mcp                serve the AI steps as MCP tools over stdin/stdout\n");
     return 2;
 }
 
@@ -32,7 +34,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "--model") && i + 1 < argc) {
             model = argv[++i];
         } else if (!strcmp(argv[i], "--version")) {
-            printf("stategate " VERSION "\n");
+            printf("stategate " STATEGATE_VERSION "\n");
             return 0;
         } else {
             break;
@@ -62,6 +64,7 @@ int main(int argc, char **argv) {
     if (!strcmp(cmd, "gen")) return cmd_gen(model);
     if (!strcmp(cmd, "signoff")) return cmd_signoff(model);
     if (!strcmp(cmd, "gate")) return cmd_gate(model, i < argc && !strcmp(argv[i], "--release"));
+    if (!strcmp(cmd, "mcp")) return cmd_mcp(model, argv[0]);
     if (!strcmp(cmd, "export") && i < argc && !strcmp(argv[i], "mermaid")) return cmd_export_mermaid(model);
     return usage();
 }

@@ -11,6 +11,8 @@ jobs:
         run: build/stategate -C examples/posture gate
       - name: Red paths
         run: scripts/redpaths.sh
+      - name: MCP server smoke test
+        run: scripts/mcp_smoke.py
       - name: Viewer smoke test
         run: |
           xvfb-run -a -s "-screen 0 1440x900x24" build/stategate-view examples/posture --send POWER_ON,CALIBRATED --screenshot "$PWD/viewer.png"

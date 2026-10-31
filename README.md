@@ -22,6 +22,7 @@ Pass `-DSTATEGATE_VIEWER=OFF` to build only the command-line tool.
 cmake -S . -B build && cmake --build build
 sudo cmake --install build      # installs stategate (alias fsm) and stategate-view
 scripts/redpaths.sh             # proves the gate turns red for each broken rule
+scripts/mcp_smoke.py            # drives the MCP server through the whole AI loop
 ```
 
 ## Ten-minute walkthrough
@@ -65,6 +66,7 @@ git add -A && git commit -m "model"
 stategate ticket gen           # one draft per stub node: node, step and files filled in
 
 # AI: fill in each draft (the ticket-writer role in AGENTS.md)
+#   with MCP the AI calls list_drafts and fill_ticket itself
 stategate ticket fill T001 --title "..." --goal "..."    # draft becomes open
 stategate ticket check
 git add -A && git commit -m "tickets"
@@ -73,12 +75,45 @@ git add -A && git commit -m "tickets"
 stategate ticket start         # approved tickets queue; the first one starts
 
 # AI: implement the active ticket, until green (the implementer role)
+#   with MCP (see below) the AI calls get_task, write_file and run_gate itself
 stategate ticket prompt        # goal, node, allowed files, current code, last errors
 #   ...the AI edits the allowed files...
 stategate ticket run           # green: commit, done, next ticket starts
                                # red: errors saved to the ticket; prompt again
 # you, after 3 reds: stategate ticket split T001 "..." "..."
 ```
+
+## Use it from your AI (MCP)
+
+`stategate mcp` serves the AI steps as MCP tools over stdin/stdout, so any
+MCP client can run the loop without copy and paste. Point it at the project:
+
+```sh
+# Claude Code
+claude mcp add stategate -- stategate -C ~/dev/cot mcp
+```
+
+```json
+// Cursor, Claude Desktop and other clients: their MCP servers config
+{ "mcpServers": { "stategate": { "command": "stategate", "args": ["-C", "/home/you/dev/cot", "mcp"] } } }
+```
+
+| Tool | Role | Same as |
+| --- | --- | --- |
+| `status` | both | `stategate ticket list` |
+| `list_drafts` | ticket writer | drafts with their node, step and files |
+| `fill_ticket` | ticket writer | `stategate ticket fill <id> --title --goal` |
+| `get_task` | implementer | `stategate ticket prompt` |
+| `read_file` | both | read a project file |
+| `write_file` | implementer | write a file the active ticket allows (others are refused) |
+| `run_gate` | implementer | `stategate ticket run` |
+
+Each tool runs the same CLI command in a child process with no terminal.
+Sign-off, approving tickets and splits are not tools: they stay with you at
+your terminal (`stategate signoff`, `stategate ticket start`,
+`stategate ticket split`). Then ask your AI, for example: "Fill in the
+stategate drafts", and after you approve, "Work the active stategate ticket
+until the gate is green".
 
 ## The viewer
 

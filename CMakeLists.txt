@@ -23,14 +23,19 @@ target_compile_definitions(sgcore PUBLIC _GNU_SOURCE)
 target_compile_options(sgcore PRIVATE -Wall -Wextra -Wswitch-enum -Werror=implicit-function-declaration)
 target_link_libraries(sgcore PUBLIC PkgConfig::YAML)
 
+# cJSON 1.7.18 (MIT), vendored for the MCP server.
+add_library(cjson STATIC third_party/cjson/cJSON.c)
+target_include_directories(cjson PUBLIC third_party/cjson)
+
 add_executable(stategate
   src/main.c
+  src/mcp.c
   src/gen_rust.c
   src/manifest.c
   src/ticket.c
   src/gate.c)
 target_compile_options(stategate PRIVATE -Wall -Wextra -Wswitch-enum -Werror=implicit-function-declaration)
-target_link_libraries(stategate PRIVATE sgcore)
+target_link_libraries(stategate PRIVATE sgcore cjson)
 
 install(TARGETS stategate DESTINATION bin)
 # `fsm` is a short alias for the same binary.
