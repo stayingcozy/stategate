@@ -19,7 +19,7 @@ static int usage(void) {
             "  gate [--release]   run all 11 checks and write .fsm/gate.json\n"
             "  signoff            architect only: approve the current locked items\n"
             "  ticket ...         gen | fill <id> ... | new <id> ... | check [<id>] | list\n"
-            "                     start [<id>] | prompt [<id>] | run | next | done <id>\n"
+            "                     start [<id>] | prompt [<id> | --drafts] | run | next | done <id>\n"
             "                     split <id> \"title\" \"title\" ...   (start and split: architect only)\n"
             "  export mermaid     print the machine as a Mermaid state diagram\n"
             "  mcp                serve the AI steps as MCP tools over stdin/stdout\n");

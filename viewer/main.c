@@ -85,9 +85,16 @@ typedef struct {
     char browse[PATH_MAX];
     StrList dirs, recent;
     char path_in[PATH_MAX], name_in[128];
-    int focus; /* 0 none, 1 path field, 2 new-folder name */
+    int focus; /* 0 none, 1 path field, 2 new-folder name, 3 AI command */
     char home_msg[256];
     int show_output; /* scroll the panel to the output card next frame */
+
+    /* Your AI: a command the prompt is piped into, or empty to copy it. */
+    char ai_cmd[1024], ai_in[1024];
+    int copy_on_finish;  /* put the finished job's output on the clipboard */
+    int ai_loop;         /* implementing: run the AI again for each next ticket */
+    char ai_ticket[64];  /* the ticket the AI was last run on */
+    char job_note[256];  /* shown with the output, e.g. "copied" */
 
     char *model_path;
     SgModel model;
@@ -486,7 +493,7 @@ static void handle_canvas_input(void) {
         app.pan.x = mouse.x - (mouse.x - app.pan.x) * (app.zoom / old);
         app.pan.y = mouse.y - (mouse.y - app.pan.y) * (app.zoom / old);
     }
-    if (IsKeyPressed(KEY_F)) fit_view();
+    if (IsKeyPressed(KEY_F) && !app.focus) fit_view();
 }
 
 
@@ -512,7 +519,7 @@ static Clay_ElementDeclaration card(void) {
 typedef enum {
     A_NONE, A_EVENT, A_RESET,
     A_HOME, A_QUIT, A_GIT_INIT, A_INIT, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
-    A_TICKET_GEN, A_REVIEW, A_GATE,
+    A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_SAVE,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
 } UiAction;
@@ -560,6 +567,8 @@ static void run_cli(const char *title, int use_pty, const char *a1, const char *
     app.modal = use_pty;
     app.modal_from = 0;
     app.show_output = !use_pty;
+    app.job_note[0] = 0;
+    app.copy_on_finish = 0;
 }
 
 static void run_shell(const char *title, const char *script) {
@@ -568,6 +577,92 @@ static void run_shell(const char *title, const char *script) {
     job_start(&app.job, title, argv, 0);
     app.modal = 0;
     app.show_output = 1;
+    app.job_note[0] = 0;
+    app.copy_on_finish = 0;
+}
+
+/* ---- your AI ---- */
+
+static char *ai_path(void) {
+    static char p[PATH_MAX];
+    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+    if (xdg && *xdg) snprintf(p, sizeof p, "%s/stategate/ai_command", xdg);
+    else snprintf(p, sizeof p, "%s/.config/stategate/ai_command", home ? home : ".");
+    return p;
+}
+
+static void ai_load(void) {
+    char *text = read_file(ai_path(), NULL);
+    app.ai_cmd[0] = 0;
+    if (text) {
+        text[strcspn(text, "\n")] = 0;
+        snprintf(app.ai_cmd, sizeof app.ai_cmd, "%s", text);
+        free(text);
+    }
+    snprintf(app.ai_in, sizeof app.ai_in, "%s", app.ai_cmd);
+}
+
+static void ai_save(void) {
+    snprintf(app.ai_cmd, sizeof app.ai_cmd, "%s", app.ai_in);
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof dir, "%s", ai_path());
+    *strrchr(dir, '/') = 0;
+    mkdirs(dir);
+    SB b;
+    sb_init(&b);
+    sb_printf(&b, "%s\n", app.ai_cmd);
+    write_file(ai_path(), b.s, b.len);
+    free(b.s);
+    app.focus = 0;
+}
+
+/* An AI step: with a command set, pipe the prompt into it; without one, put
+ * the prompt on the clipboard to paste into any AI. */
+static void run_ai(int drafts) {
+    if (app.job.running) return;
+    const char *pargs = drafts ? "ticket prompt --drafts" : "ticket prompt";
+    if (!app.ai_cmd[0]) {
+        if (drafts) run_cli("stategate ticket prompt --drafts", 0, "ticket", "prompt", "--drafts");
+        else run_cli("stategate ticket prompt", 0, "ticket", "prompt", NULL);
+        app.copy_on_finish = 1;
+        return;
+    }
+    char script[PATH_MAX + 1200], title[1300];
+    snprintf(script, sizeof script, "'%s' %s | %s", app.sg, pargs, app.ai_cmd);
+    snprintf(title, sizeof title, "stategate %s | %s", pargs, app.ai_cmd);
+    run_shell(title, script);
+    app.ai_loop = !drafts;
+    snprintf(app.ai_ticket, sizeof app.ai_ticket, "%s", app.st.current);
+}
+
+/* A job ended: copy its output, or move the AI on to the next ticket. */
+static void job_finished(void) {
+    if (app.copy_on_finish) {
+        app.copy_on_finish = 0;
+        if (app.job.exit_code == 0 && app.job.out.s) {
+            SetClipboardText(app.job.out.s);
+            snprintf(app.job_note, sizeof app.job_note,
+                     "Copied to the clipboard: paste it into your AI.");
+        }
+        return;
+    }
+    if (!app.ai_loop) return;
+    app.ai_loop = 0;
+    if (app.job.exit_code != 0) return;
+    /* `ticket run` starts the next approved ticket on green: carry on with
+     * it. The same ticket still active means the AI stopped short of green. */
+    if (!strcmp(app.st.current_status, "active") && strcmp(app.st.current, app.ai_ticket)) {
+        char prev[64];
+        snprintf(prev, sizeof prev, "%s", app.ai_ticket);
+        run_ai(0);
+        snprintf(app.job_note, sizeof app.job_note, "%s is done; now %s.", prev, app.st.current);
+    } else if (!strcmp(app.st.current_status, "active")) {
+        snprintf(app.job_note, sizeof app.job_note, "%s is still active: the gate is not green yet. See the gate below.", app.ai_ticket);
+    } else if (!strcmp(app.st.current_status, "locked")) {
+        snprintf(app.job_note, sizeof app.job_note, "%s is locked after 3 red runs: split it (stategate ticket split).", app.ai_ticket);
+    } else {
+        snprintf(app.job_note, sizeof app.job_note, "No ticket left to implement.");
+    }
 }
 
 static int ends_with(const SB *b, const char *tail) {
@@ -753,10 +848,11 @@ static void steps_card_body(void) {
         if (s->git && !saved && !ticket_work) button("Commit", A_COMMIT, 0, !busy && s->dirty, next == 0 && s->dirty);
     }
     CLAY(step_decl()) {
-        step_head(8, "Tickets: draft, then your AI fills them in", m[8], next == 8,
-                  s->t_draft ? TextFormat("%d draft(s) need a title and goal from your AI (MCP: fill_ticket)", s->t_draft)
+        step_head(8, "Tickets: draft, AI fills in", m[8], next == 8,
+                  s->t_draft ? TextFormat("%d draft(s) need a title and goal from your AI", s->t_draft)
                              : tickets_any ? TextFormat("%d ticket(s) written", tickets_any) : "$ stategate ticket gen");
         button("Draft tickets", A_TICKET_GEN, 0, !busy && s->generated && s->init, next == 8 && !s->t_draft);
+        button(app.ai_cmd[0] ? "Fill with AI" : "Copy AI prompt", A_AI_FILL, 0, !busy && s->t_draft > 0, next == 8 && s->t_draft);
     }
     CLAY(step_decl()) {
         step_head(9, "Review tickets: approve or skip", m[9], next == 9,
@@ -765,8 +861,11 @@ static void steps_card_body(void) {
     }
     CLAY(step_decl()) {
         step_head(10, "AI writes node logic, ticket by ticket", m[10], next == 10,
-                  *s->current ? TextFormat("active: %s (%s). Ask your AI (MCP: get_task, write_file, run_gate)", s->current, s->current_status) :
+                  *s->current ? TextFormat("active: %s (%s), %d approved after it. %s", s->current, s->current_status, s->t_approved,
+                                           app.ai_cmd[0] ? "Your AI works each ticket until green." : "Paste the prompt into your AI.") :
                   s->t_approved ? TextFormat("%d approved, waiting", s->t_approved) : "needs an approved ticket");
+        button(app.ai_cmd[0] ? "Implement with AI" : "Copy AI prompt", A_AI_IMPL, 0,
+               !busy && !strcmp(s->current_status, "active"), next == 10 && !strcmp(s->current_status, "active"));
     }
     CLAY(step_decl()) {
         step_head(11, "Run the 11 checks", m[11], next == 11,
@@ -786,7 +885,23 @@ static void output_body(void) {
     CLAY_TEXT(csf("$ %s", j->title), T(14, C_INK));
     CLAY_TEXT(cs(j->running ? "running..." : j->exit_code == 0 ? "finished" : TextFormat("failed (exit %d)", j->exit_code)),
               T(14, j->running ? C_ACCENT : j->exit_code == 0 ? C_GREEN : C_RED));
+    if (app.job_note[0]) CLAY_TEXT(cs(app.job_note), T(14, C_ACCENT));
     if (!j->pty) CLAY_TEXT(tail_lines(&j->out, 0, 24), T(13, C_INK));
+}
+
+static void text_field(int which, char *buf, const char *placeholder, float width);
+
+static void ai_card(void) {
+    CLAY(card()) {
+        heading("YOUR AI");
+        CLAY_TEXT(cs(app.ai_cmd[0] ? "The AI buttons pipe their prompt into this command, run in the project folder:"
+                                   : "No command set: the AI buttons copy the prompt for you to paste. Or set a command the prompt is piped into:"),
+                  T(13, C_QUIET));
+        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 8, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+            text_field(3, app.ai_in, "e.g. claude -p --permission-mode acceptEdits ...", 0);
+            button("Save", A_AI_SAVE, 0, strcmp(app.ai_in, app.ai_cmd) != 0, strcmp(app.ai_in, app.ai_cmd) != 0);
+        }
+    }
 }
 
 static void output_card(void) {
@@ -969,6 +1084,7 @@ static Clay_RenderCommandArray build_project(void) {
             errors_card();
             steps_card();
             output_card();
+            ai_card();
             gate_card();
             sim_card();
             ladder_card();
@@ -1078,7 +1194,10 @@ static void text_field(int which, char *buf, const char *placeholder, float widt
           .layout = {.sizing = {.width = width > 0 ? CLAY_SIZING_FIXED(width) : CLAY_SIZING_GROW(0)}, .padding = {10, 10, 7, 7}},
           .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(6), .clip = {.horizontal = true},
           .border = {.color = focused ? C_ACCENT : C_RULE, .width = {1, 1, 1, 1, 0}}}) {
-        if (*buf || focused) CLAY_TEXT(csf("%s%s", buf, focused && ((int)(GetTime() * 2) % 2) ? "|" : ""), T(15, C_INK));
+        /* While typing, show the end of a long value: the field cannot scroll. */
+        size_t keep = which == 3 ? 46 : 90, len = strlen(buf);
+        const char *shown = focused && len > keep ? buf + len - keep : buf;
+        if (*buf || focused) CLAY_TEXT(csf("%s%s%s", shown != buf ? "..." : "", shown, focused && ((int)(GetTime() * 2) % 2) ? "|" : ""), T(15, C_INK));
         else CLAY_TEXT(cs(placeholder), T(15, C_QUIET));
     }
     button_reg(id, A_FOCUS, which, NULL);
@@ -1198,6 +1317,9 @@ static void dispatch(UiAction a, int arg) {
                              "git add -A && git commit -q -m 'stategate: model and generated code' && git log --oneline -1"); break;
     case A_TICKET_GEN: run_cli("stategate ticket gen", 0, "ticket", "gen", NULL); break;
     case A_REVIEW: run_cli("stategate ticket start", 1, "ticket", "start", NULL); break;
+    case A_AI_FILL: run_ai(1); break;
+    case A_AI_IMPL: run_ai(0); break;
+    case A_AI_SAVE: ai_save(); break;
     case A_GATE:
         if (!strcmp(app.st.current_status, "active")) run_cli("stategate ticket run", 0, "ticket", "run", NULL);
         else run_cli("stategate gate", 0, "gate", NULL, NULL);
@@ -1258,20 +1380,26 @@ static void handle_clicks(void) {
         hit = 1;
         break;
     }
-    if (!hit && app.screen == SCREEN_HOME) app.focus = 0;
+    if (!hit) app.focus = 0;
 }
 
 static void handle_typing(void) {
-    if (app.screen != SCREEN_HOME || !app.focus) return;
-    char *buf = app.focus == 1 ? app.path_in : app.name_in;
-    size_t cap = app.focus == 1 ? sizeof app.path_in : sizeof app.name_in;
+    if (!app.focus) return;
+    char *buf = app.focus == 1 ? app.path_in : app.focus == 2 ? app.name_in : app.ai_in;
+    size_t cap = app.focus == 1 ? sizeof app.path_in : app.focus == 2 ? sizeof app.name_in : sizeof app.ai_in;
     int c;
     while ((c = GetCharPressed()) > 0) {
         size_t n = strlen(buf);
         if (c >= 32 && c < 127 && n + 1 < cap) { buf[n] = (char)c; buf[n + 1] = 0; }
     }
+    int ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+    if (ctrl && IsKeyPressed(KEY_V)) {
+        const char *clip = GetClipboardText();
+        for (size_t n = strlen(buf); clip && *clip && n + 1 < cap; clip++)
+            if (*clip >= 32 && *clip < 127) { buf[n++] = *clip; buf[n] = 0; }
+    }
     if ((IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && *buf) buf[strlen(buf) - 1] = 0;
-    if (IsKeyPressed(KEY_ENTER)) dispatch(app.focus == 1 ? A_GO_PATH : A_CREATE, 0);
+    if (IsKeyPressed(KEY_ENTER)) dispatch(app.focus == 1 ? A_GO_PATH : app.focus == 2 ? A_CREATE : A_AI_SAVE, 0);
 }
 
 static void clay_error(Clay_ErrorData e) { fprintf(stderr, "clay: %.*s\n", e.errorText.length, e.errorText.chars); }
@@ -1317,6 +1445,7 @@ int main(int argc, char **argv) {
         }
     }
     find_cli();
+    ai_load();
     app.zoom = 1.0f;
 
     SetTraceLogLevel(LOG_WARNING);
@@ -1357,6 +1486,7 @@ int main(int argc, char **argv) {
             if (job_poll(&app.job) && !app.job.running) {
                 refresh_status();
                 if (!app.job.pty) app.modal = 0;
+                job_finished();
             }
             if (!app.job.running && GetTime() - app.status_at > 3.0) refresh_status();
             if (IsKeyPressed(KEY_ESCAPE) && app.modal) {

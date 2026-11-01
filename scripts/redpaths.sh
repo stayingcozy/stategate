@@ -284,6 +284,19 @@ out=$("$SG" gate 2>&1 || true)
 if echo "$out" | grep -q "nothing is locked: no sign-off needed"; then ok "no locked items, no sign-off needed"
 else bad "no locked items, no sign-off needed" "expected signoff to pass"; fi
 
+# The ticket writer's brief: every draft, and the command that fills one.
+setup --no-start
+rm -f .fsm/tickets/*.yaml
+"$SG" ticket gen > /dev/null
+out=$("$SG" ticket prompt --drafts)
+if echo "$out" | grep -q "^## T001" && echo "$out" | grep -q "stategate ticket fill <id>" \
+    && echo "$out" | grep -q "// @action start_nudge" && echo "$out" | grep -q "^machine:"; then
+    ok "ticket prompt --drafts lists each draft with its code and the model"
+else bad "ticket prompt --drafts lists each draft with its code and the model" "$out"; fi
+"$SG" ticket fill T001 --title t --goal g > /dev/null && "$SG" ticket fill T002 --title t --goal g > /dev/null
+if ! "$SG" ticket prompt --drafts > /dev/null 2>&1; then ok "ticket prompt --drafts with no drafts left fails"
+else bad "ticket prompt --drafts with no drafts left fails" "exit 0"; fi
+
 # `stategate status --json` is what the app reads to show each step.
 fresh="$WORK/fresh"
 rm -rf "$fresh"; mkdir -p "$fresh"; cd "$fresh"
