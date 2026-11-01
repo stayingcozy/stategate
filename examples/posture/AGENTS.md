@@ -6,6 +6,9 @@ gate decides whether work lands. Your description of your work does not count;
 only `stategate gate` does.
 
 There are two agent roles. Do one per session and say which one you are doing.
+If you have the stategate MCP tools, use them instead of the commands below: status,
+list_drafts and fill_ticket for the ticket writer; get_task, write_file and run_gate
+for the implementer.
 
 ## Ticket writer
 
