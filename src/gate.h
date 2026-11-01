@@ -10,6 +10,8 @@ int cmd_gate(const char *model_path, int release);
 int cmd_signoff(const char *model_path);
 int cmd_init(const char *model_path);
 int cmd_export_mermaid(const char *model_path);
+/* Every step's state in one snapshot; model_path may be NULL. */
+int cmd_status(const char *model_path, int json);
 
 /* Canonical text of every locked item; its hash is what the architect signs. */
 char *locked_canonical(const SgModel *m);

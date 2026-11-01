@@ -12,6 +12,7 @@ static int usage(void) {
     fprintf(stderr,
             "stategate " STATEGATE_VERSION " - model-first development with a deterministic gate\n\n"
             "usage: stategate [-C dir] [--model file.yaml] <command>\n\n"
+            "  status [--json]    where the project is: git, init, model, gen, sign-off, tickets, gate\n"
             "  init               set up .fsm/, AGENTS.md, CHANGELOG.md and the pre-commit hook\n"
             "  validate           run gate checks 1-3 on the model\n"
             "  gen                generate Rust wiring, tests and the manifest; scaffold node files\n"
@@ -49,6 +50,22 @@ int main(int argc, char **argv) {
         /* list, done and split work without a model; new, check and start need it. */
         if (!model) model = model_find(".", &errors);
         return cmd_ticket(argc - i, argv + i, model);
+    }
+    if (!strcmp(cmd, "status")) {
+        if (!model) model = model_find(".", &errors);
+        return cmd_status(model, i < argc && !strcmp(argv[i], "--json"));
+    }
+    if (!strcmp(cmd, "init") && !model) {
+        /* init comes before the model exists: name the one to write. */
+        model = model_find(".", &errors);
+        if (!model) {
+            static char name[512];
+            char cwd[400];
+            const char *base = getcwd(cwd, sizeof cwd) ? strrchr(cwd, '/') : NULL;
+            snprintf(name, sizeof name, "%s.yaml", base && base[1] ? base + 1 : "model");
+            model = name;
+        }
+        return cmd_init(model);
     }
     if (!model) {
         found = model_find(".", &errors);

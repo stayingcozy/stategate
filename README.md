@@ -5,8 +5,8 @@ as a state machine in YAML. stategate generates the wiring and the transition
 tests, any agent you like writes the logic inside each node, and a
 deterministic gate decides what lands. The gate reports status; agents don't.
 
-Status: weekend MVP. The command-line tool, the gate and a read-only viewer
-with a simulator work end to end on the posture wearable example.
+Status: weekend MVP. The command-line tool, the gate, the MCP server and an
+app that runs each step work end to end on the posture wearable example.
 
 ![stategate-view showing the posture machine, the gate result and the simulator](docs/viewer.png)
 
@@ -115,23 +115,49 @@ your terminal (`stategate signoff`, `stategate ticket start`,
 stategate drafts", and after you approve, "Work the active stategate ticket
 until the gate is green".
 
-## The viewer
+## The app
 
 ```sh
-stategate-view examples/posture
+stategate-view              # opens on the projects screen
+stategate-view ~/dev/cot    # opens that project
 ```
 
-The left two-thirds draws the machine from the layout saved in the model.
-The right third shows the last gate result from `.fsm/gate.json`, the stub
-count, the active ticket, a simulator and the step ladder. Click an event to
-fire it: the active state lights up and the transition it took turns blue;
-ignored events say so. The viewer reloads the model and the gate result when
-either file changes, keeps showing the last valid model while the file has
-errors, and never writes anything. Drag to pan, scroll to zoom, F to fit.
+It opens full screen; F11 switches to a window and back, `--windowed` starts
+in one. The projects screen browses folders, opens one, creates a new folder
+under the one you are in, and lists recent projects.
 
-It is read-only for now: you or your agent edit the YAML. `--send EV1,EV2`
-fires events at start-up and `--screenshot out.png` saves one frame and exits,
-which CI uses as a smoke test.
+A project shows the machine on the left, drawn from the layout saved in the
+model, and the steps on the right. Each step's button runs the command shown
+under it and prints its output, so everything the app does you can also do at
+a terminal:
+
+| Step | Button runs |
+|---|---|
+| Git repository | `git init` |
+| Set up stategate | `stategate init` |
+| Write the state machine | opens the model in your default editor (`xdg-open`, `open` on macOS) |
+| Validate | `stategate validate` |
+| Generate | `stategate gen` |
+| Sign off | `stategate signoff`, in a dialog where you confirm |
+| Save to git | `git add -A && git commit` |
+| Draft tickets | `stategate ticket gen` |
+| Review | `stategate ticket start`, in a dialog: approve, skip or quit per ticket |
+| Run gate | `stategate ticket run` while a ticket is active, else `stategate gate` |
+
+Filling in drafts and writing node logic are your AI's steps; the app shows
+which MCP tools it uses. The confirmations run the real command on a
+pseudo-terminal, so they are the same typed confirmations as at a terminal.
+The app reads `stategate status --json` to mark each step, and reloads the
+model and the gate result when either file changes.
+
+Below the steps: the output of the last command, the last gate result from
+`.fsm/gate.json`, a simulator and the step ladder. Click an event to fire it:
+the active state lights up and the transition it took turns blue; ignored
+events say so. Drag to pan, scroll to zoom, F to fit. The machine itself stays
+YAML you write by hand.
+
+`--send EV1,EV2` fires events at start-up and `--screenshot out.png` saves one
+frame and exits, which CI uses as a smoke test.
 
 ## How work flows
 
@@ -204,7 +230,7 @@ Checks run in order and stop at the first failure.
   could edit the active ticket's failure counter. Moving the counter out of
   reach comes later.
 - Flat states only; no nesting, parallel regions or history yet.
-- The viewer's simulator follows the model's transition table in C, separately
+- The app's simulator follows the model's transition table in C, separately
   from the generated Rust. Both read the same table, and the generated tests
   cover the Rust side.
 - Rust is the only target language so far; C is next.
