@@ -182,6 +182,7 @@ static int ticket_usage(void) {
             "       stategate ticket start <id>      (architect only: approve and start one ticket)\n"
             "       stategate ticket next            (start the next approved ticket)\n"
             "       stategate ticket prompt [<id>]   (the active ticket as one block for any AI)\n"
+            "       stategate ticket prompt --drafts (the drafts to fill in, as one block for any AI)\n"
             "       stategate ticket run             (gate; green commits and starts the next ticket)\n"
             "       stategate ticket done <id>\n"
             "       stategate ticket split <id> \"<sub-step title>\" \"<sub-step title>\" ...\n");
@@ -562,6 +563,48 @@ static int ticket_prompt(Tickets *ts, const char *id, const char *model_path) {
     return 0;
 }
 
+/* ticket prompt --drafts: the ticket writer's brief. Every draft with its
+ * node, step and files, the model and the node code, and the one command that
+ * fills a draft in. Pasted into any AI, or piped into one. */
+static int drafts_prompt(Tickets *ts, const char *model_path) {
+    if (!need_model(model_path)) return 2;
+    int n = 0;
+    for (int i = 0; i < ts->n; i++) n += !strcmp(ts->v[i].status, "draft");
+    if (!n) { fprintf(stderr, "no draft tickets: write them with stategate ticket gen\n"); return 1; }
+    SgModel m;
+    memset(&m, 0, sizeof m);
+    StrList e = {0};
+    model_load(model_path, &m, &e);
+    printf("# Fill in %d stategate draft ticket(s)\n\n", n);
+    printf("You are the ticket writer. Each draft below already names its node, step and\n"
+           "files; give each one a short title and a goal: one or two sentences on what the\n"
+           "node's logic must do, in terms a reviewer can check. Do not write code.\n\n"
+           "Fill each draft with this command, one per draft:\n\n"
+           "    stategate ticket fill <id> --title \"...\" --goal \"...\"\n\n"
+           "If you cannot run commands, reply with the commands for the architect to run.\n"
+           "The architect approves or skips each ticket afterwards.\n");
+    for (int i = 0; i < ts->n; i++) {
+        Ticket *t = &ts->v[i];
+        if (strcmp(t->status, "draft")) continue;
+        const char *step_goal = "";
+        for (int k = 0; k < m.n_steps; k++)
+            if (!strcmp(m.steps[k].id, t->step)) step_goal = m.steps[k].goal;
+        printf("\n## %s\n\nStep %s: %s\n\n", t->id, t->step, step_goal);
+        for (int k = 0; k < t->nodes.n; k++) print_node_context(&m, t->nodes.v[k]);
+        printf("\nFiles:");
+        for (int k = 0; k < t->files.n; k++) printf(" `%s`", t->files.v[k]);
+        printf("\n");
+        for (int k = 0; k < t->files.n; k++)
+            if (!strpbrk(t->files.v[k], "*?[") && access(t->files.v[k], F_OK) == 0) print_file_block(t->files.v[k]);
+    }
+    char *model = read_file(model_path, NULL);
+    if (model) {
+        printf("\n## The model (%s)\n\n```yaml\n%s```\n", model_path, model);
+        free(model);
+    }
+    return 0;
+}
+
 /* ticket run: the gate for the active ticket. Green commits the work, marks
  * the ticket done and starts the next approved one. Red keeps the ticket
  * active with the errors saved in it (the gate does that), until it locks. */
@@ -640,6 +683,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
         return bad;
     }
     if (!strcmp(sub, "gen")) return ticket_gen(&ts, model_path);
+    if (!strcmp(sub, "prompt") && argc >= 2 && !strcmp(argv[1], "--drafts")) return drafts_prompt(&ts, model_path);
     if (!strcmp(sub, "prompt")) return ticket_prompt(&ts, argc >= 2 ? argv[1] : NULL, model_path);
     if (!strcmp(sub, "run")) return ticket_run(model_path);
     if (!strcmp(sub, "start") && argc < 2) return review_open(&ts, model_path);

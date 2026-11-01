@@ -67,6 +67,7 @@ stategate ticket gen           # one draft per stub node: node, step and files f
 
 # AI: fill in each draft (the ticket-writer role in AGENTS.md)
 #   with MCP the AI calls list_drafts and fill_ticket itself
+stategate ticket prompt --drafts   # every draft with its node and code, for any AI
 stategate ticket fill T001 --title "..." --goal "..."    # draft becomes open
 stategate ticket check
 git add -A && git commit -m "tickets"
@@ -141,11 +142,27 @@ a terminal:
 | Sign off | `stategate signoff`, in a dialog where you confirm |
 | Save to git | `git add -A && git commit` |
 | Draft tickets | `stategate ticket gen` |
+| Fill with AI | `stategate ticket prompt --drafts \| <your AI command>` |
 | Review | `stategate ticket start`, in a dialog: approve, skip or quit per ticket |
+| Implement with AI | `stategate ticket prompt \| <your AI command>`, again for each next ticket |
 | Run gate | `stategate ticket run` while a ticket is active, else `stategate gate` |
 
-Filling in drafts and writing node logic are your AI's steps; the app shows
-which MCP tools it uses. The confirmations run the real command on a
+Filling in drafts and writing node logic are your AI's steps. Set the AI
+command under **Your AI** (it is saved in `~/.config/stategate/ai_command`)
+and the two AI buttons pipe their prompt into it, run in the project folder.
+For Claude Code:
+
+```sh
+claude -p --permission-mode acceptEdits --allowedTools "Bash(stategate:*)"
+```
+
+The prompt tells the AI which command to run: `stategate ticket fill` for each
+draft, and `stategate ticket run` when a ticket's code is done. Implement with
+AI goes on to the next ticket each time one turns green, and stops when a
+ticket stays red, locks, or the queue is empty. With no command set, the
+buttons copy the prompt to the clipboard for you to paste into any AI.
+Approving tickets and signing off stay with you: they need a terminal, which
+the AI's commands don't have. The confirmations run the real command on a
 pseudo-terminal, so they are the same typed confirmations as at a terminal.
 The app reads `stategate status --json` to mark each step, and reloads the
 model and the gate result when either file changes.
