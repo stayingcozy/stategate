@@ -1,9 +1,13 @@
-/* stategate-view: read-only viewer and simulator for a stategate model.
+/* stategate-view: the stategate app.
  *
- * Left two-thirds: the state machine drawn from the model's saved layout.
- * Right third (Clay): the last gate result from .fsm/gate.json, a simulator
- * with one button per event, and the step ladder. The viewer never writes
- * a file, and it reports status only from gate.json. */
+ * Home screen: open or create a project folder, or pick a recent one.
+ * Project screen, left two-thirds: the state machine drawn from the model's
+ * saved layout. Right third (Clay): the steps of the flow, each a button
+ * that runs the same `stategate` CLI command a person would type, the
+ * command's output, the last gate result, a simulator and the step ladder.
+ * The model itself is edited by hand; the canvas reloads when it changes.
+ * Step states come from `stategate status --json`, gate results from
+ * .fsm/gate.json: the app keeps no status of its own. */
 
 #define CLAY_IMPLEMENTATION
 #include "third_party/clay/clay.h"
@@ -15,9 +19,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <limits.h>
 #include <unistd.h>
 
+#include "cJSON.h"
 #include "gate_status.h"
+#include "runner.h"
 #include "model.h"
 #include "validate.h"
 
@@ -52,7 +60,35 @@ static const Clay_Color C_BTN_OFF = {238, 238, 235, 255};
 static const Clay_Color C_RULE = {226, 226, 222, 255};
 
 /* ---- app state ---- */
+
+/* What `stategate status --json` reported. */
 typedef struct {
+    int ok; /* the status command ran */
+    int git, has_commit, dirty, init, valid, generated, locked_items, signed_off;
+    int t_draft, t_open, t_approved, t_active, t_done, t_locked;
+    char current[64], current_status[16], gate[8];
+} Status;
+
+typedef enum { SCREEN_HOME, SCREEN_PROJECT } Screen;
+
+typedef struct {
+    Screen screen;
+    char project[PATH_MAX];
+    char sg[PATH_MAX]; /* the stategate CLI the buttons run */
+    Status st;
+    Job job;
+    int modal;          /* a pty job (sign-off, review) is shown over the app */
+    size_t modal_from;  /* show output from here: the current question only */
+    double status_at;
+
+    /* home screen */
+    char browse[PATH_MAX];
+    StrList dirs, recent;
+    char path_in[PATH_MAX], name_in[128];
+    int focus; /* 0 none, 1 path field, 2 new-folder name */
+    char home_msg[256];
+    int show_output; /* scroll the panel to the output card next frame */
+
     char *model_path;
     SgModel model;
     int have_model;
@@ -151,6 +187,7 @@ static void sim_send(const char *event) {
 static void fit_view(void);
 
 static void load_model(int first) {
+    if (!app.model_path) return;
     SgModel m;
     StrList errors = {0};
     if (model_load(app.model_path, &m, &errors) == 0) {
@@ -174,6 +211,13 @@ static void load_model(int first) {
 }
 
 static void poll_files(void) {
+    if (!app.model_path) {
+        /* The person is writing the model: pick it up once it appears. */
+        StrList e = {0};
+        app.model_path = model_find(".", &e);
+        if (!app.model_path) return;
+        app.model_mtime = 0;
+    }
     time_t mm = mtime_of(app.model_path), gm = mtime_of(".fsm/gate.json");
     if (mm != app.model_mtime) { app.model_mtime = mm; load_model(0); }
     if (gm != app.gate_mtime) { app.gate_mtime = gm; gate_status_load(&app.gate, ".fsm/gate.json"); }
@@ -417,7 +461,13 @@ static void draw_canvas(void) {
         /* Labels last, so no node hides them. */
         for (int i = 0; i < n_labels; i++) draw_label(labels[i].text, labels[i].at, labels[i].hot);
     } else {
-        text("No valid model loaded yet. See the panel for errors.", 24, 24, 18, QUIET);
+        if (app.model_path) text("No valid model loaded yet. See the panel for errors.", 24, 24, 18, QUIET);
+        else {
+            text("No model in this folder yet.", 24, 24, 22, INK);
+            text(TextFormat("Write %s.yaml here with your editor (examples/posture/posture.yaml is a template).",
+                            strrchr(app.project, '/') ? strrchr(app.project, '/') + 1 : "model"), 24, 58, 16, QUIET);
+            text("It appears here as soon as you save it.", 24, 82, 16, QUIET);
+        }
     }
     text("drag to pan, scroll to zoom, F to fit", 16, ch - 26, 14, QUIET);
     EndScissorMode();
@@ -439,6 +489,7 @@ static void handle_canvas_input(void) {
     if (IsKeyPressed(KEY_F)) fit_view();
 }
 
+
 /* ---- panel (Clay) ---- */
 
 static Clay_TextElementConfig *T(int size, Clay_Color color) {
@@ -454,6 +505,295 @@ static Clay_ElementDeclaration card(void) {
         .cornerRadius = CLAY_CORNER_RADIUS(8),
         .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
     };
+}
+
+/* ---- buttons: registered while the layout is built, dispatched after ---- */
+
+typedef enum {
+    A_NONE, A_EVENT, A_RESET,
+    A_HOME, A_QUIT, A_GIT_INIT, A_INIT, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
+    A_TICKET_GEN, A_REVIEW, A_GATE,
+    A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP,
+    A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
+} UiAction;
+
+typedef struct {
+    Clay_ElementId id;
+    UiAction action;
+    int arg;
+    const char *text;
+} Button;
+
+static Button buttons[256];
+static int n_buttons;
+
+static void button_reg(Clay_ElementId id, UiAction a, int arg, const char *text) {
+    if (n_buttons < (int)(sizeof buttons / sizeof buttons[0])) buttons[n_buttons++] = (Button){id, a, arg, text};
+}
+
+/* A button; disabled ones draw quiet and do nothing. */
+static void button(const char *label, UiAction a, int arg, int enabled, int primary) {
+    static int seq;
+    Clay_ElementId id = CLAY_IDI("Btn", seq++ % 100000);
+    if (n_buttons == 0) seq = 1; /* ids restart each frame */
+    CLAY({.id = id,
+          .layout = {.padding = {12, 12, 6, 6}},
+          .backgroundColor = !enabled ? C_BTN_OFF : primary ? (Clay_Hovered() ? (Clay_Color){29, 78, 216, 255} : C_ACCENT)
+                                                            : (Clay_Hovered() ? C_BTN_HOVER : C_BTN),
+          .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+        CLAY_TEXT(cs(label), T(14, !enabled ? C_QUIET : primary ? (Clay_Color){255, 255, 255, 255} : C_INK));
+    }
+    if (enabled) button_reg(id, a, arg, NULL);
+}
+
+/* ---- running CLI commands ---- */
+
+static void refresh_status(void);
+
+static void run_cli(const char *title, int use_pty, const char *a1, const char *a2, const char *a3) {
+    if (app.job.running) return;
+    char *argv[6] = {app.sg, (char *)a1, (char *)a2, (char *)a3, NULL, NULL};
+    if (job_start(&app.job, title, argv, use_pty) != 0) {
+        sb_init(&app.job.out);
+        sb_printf(&app.job.out, "could not start %s\n", app.sg);
+    }
+    app.modal = use_pty;
+    app.modal_from = 0;
+    app.show_output = !use_pty;
+}
+
+static void run_shell(const char *title, const char *script) {
+    if (app.job.running) return;
+    char *argv[] = {"/bin/sh", "-c", (char *)script, NULL};
+    job_start(&app.job, title, argv, 0);
+    app.modal = 0;
+    app.show_output = 1;
+}
+
+static int ends_with(const SB *b, const char *tail) {
+    size_t n = strlen(tail);
+    return b->s && b->len >= n && !memcmp(b->s + b->len - n, tail, n);
+}
+
+/* The question a pty job is waiting on, if any. */
+typedef enum { Q_NONE, Q_SIGNOFF, Q_REVIEW } Question;
+
+static Question job_question(void) {
+    if (!app.job.running || !app.job.pty) return Q_NONE;
+    if (ends_with(&app.job.out, "Type 'sign off' to confirm: ")) return Q_SIGNOFF;
+    if (ends_with(&app.job.out, "approve / skip / quit? ")) return Q_REVIEW;
+    return Q_NONE;
+}
+
+/* Last n lines of s from offset `from`, into the frame arena. */
+static Clay_String tail_lines(const SB *b, size_t from, int n) {
+    if (!b->s || from >= b->len) return cs("");
+    const char *start = b->s + from, *end = b->s + b->len;
+    const char *p = end;
+    int lines = 0;
+    while (p > start) {
+        if (p[-1] == '\n' && p != end && ++lines >= n) break;
+        p--;
+    }
+    while (p < end && *p == '\n') p++;
+    char tmp[16384];
+    size_t len = (size_t)(end - p);
+    if (len >= sizeof tmp) { p = end - (sizeof tmp - 1); len = sizeof tmp - 1; }
+    memcpy(tmp, p, len);
+    tmp[len] = 0;
+    while (len && (tmp[len - 1] == '\n' || tmp[len - 1] == ' ')) tmp[--len] = 0;
+    return cs(tmp);
+}
+
+/* ---- status ---- */
+
+static int jb(cJSON *o, const char *k) { return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(o, k)); }
+static int ji(cJSON *o, const char *k) {
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    return cJSON_IsNumber(v) ? v->valueint : 0;
+}
+static void js(cJSON *o, const char *k, char *out, size_t n) {
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    snprintf(out, n, "%s", cJSON_IsString(v) ? v->valuestring : "");
+}
+
+static void refresh_status(void) {
+    char cmd[PATH_MAX + 32];
+    snprintf(cmd, sizeof cmd, "'%s' status --json 2>/dev/null", app.sg);
+    int rc;
+    char *out = run_capture(cmd, &rc);
+    cJSON *o = cJSON_Parse(out);
+    free(out);
+    Status st = {0};
+    if (o) {
+        st.ok = 1;
+        st.git = jb(o, "git");
+        st.has_commit = jb(o, "has_commit");
+        st.dirty = jb(o, "dirty");
+        st.init = jb(o, "init");
+        st.valid = jb(o, "valid");
+        st.generated = jb(o, "generated");
+        st.locked_items = jb(o, "locked_items");
+        st.signed_off = jb(o, "signed_off");
+        cJSON *t = cJSON_GetObjectItemCaseSensitive(o, "tickets");
+        st.t_draft = ji(t, "draft");
+        st.t_open = ji(t, "open");
+        st.t_approved = ji(t, "approved");
+        st.t_active = ji(t, "active");
+        st.t_done = ji(t, "done");
+        st.t_locked = ji(t, "locked");
+        js(o, "current_ticket", st.current, sizeof st.current);
+        js(o, "current_status", st.current_status, sizeof st.current_status);
+        js(o, "gate", st.gate, sizeof st.gate);
+        cJSON_Delete(o);
+    }
+    app.st = st;
+    app.status_at = GetTime();
+}
+
+/* ---- the steps card ---- */
+
+typedef enum { S_DONE, S_TODO, S_LATER } StepMark;
+
+/* ~ for the home folder, and only the tail of a long path. */
+static const char *short_path(const char *p) {
+    static char out[4][256];
+    static int k;
+    char *o = out[k++ % 4];
+    const char *home = getenv("HOME");
+    char tmp[PATH_MAX];
+    if (home && *home && !strncmp(p, home, strlen(home))) snprintf(tmp, sizeof tmp, "~%s", p + strlen(home));
+    else snprintf(tmp, sizeof tmp, "%s", p);
+    size_t n = strlen(tmp);
+    if (n > 52) snprintf(o, 256, "...%s", tmp + n - 49);
+    else snprintf(o, 256, "%s", tmp);
+    return o;
+}
+
+static Clay_ElementDeclaration step_decl(void) {
+    return (Clay_ElementDeclaration){.layout = {.childGap = 10, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {0, 0, 3, 3},
+                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}};
+}
+
+/* The mark and the text of a step row; the caller adds its buttons after. */
+static void step_head(int num, const char *title, StepMark mark, int is_next, const char *detail) {
+    Clay_Color mc = mark == S_DONE ? C_GREEN : is_next ? C_ACCENT : C_QUIET;
+    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(26)}}}) {
+        CLAY_TEXT(mark == S_DONE ? cs("OK") : num ? csf("%d", num) : cs("-"), T(14, mc));
+    }
+    /* No clip here: Clay 0.14 keeps at most 10 clipping containers per layout. */
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
+        CLAY_TEXT(cs(title), T(16, is_next && mark != S_DONE ? C_ACCENT : C_INK));
+        if (detail && *detail) CLAY_TEXT(cs(detail), T(13, C_QUIET));
+    }
+}
+
+static void steps_card_body(void) {
+    const Status *s = &app.st;
+    int busy = app.job.running;
+    int has_model = app.model_path != NULL;
+    int tickets_any = s->t_open + s->t_approved + s->t_active + s->t_done + s->t_locked;
+    int saved = s->git && s->has_commit && !s->dirty;
+    StepMark m[12];
+    m[1] = S_DONE;
+    m[2] = s->git ? S_DONE : S_TODO;
+    m[3] = s->init ? S_DONE : S_TODO;
+    m[4] = has_model && s->valid ? S_DONE : S_TODO;
+    m[5] = s->valid ? S_DONE : S_TODO;
+    m[6] = s->generated ? S_DONE : S_TODO;
+    m[7] = s->valid && s->signed_off ? S_DONE : S_TODO;
+    /* Once a ticket is active, `ticket run` commits each ticket's work. */
+    int ticket_work = s->t_active > 0;
+    m[0] = saved || ticket_work ? S_DONE : S_TODO; /* commit */
+    m[8] = tickets_any && !s->t_draft ? S_DONE : S_TODO;
+    m[9] = tickets_any && !s->t_open && !s->t_draft ? S_DONE : S_TODO;
+    m[10] = tickets_any && !s->t_draft && !s->t_open && !s->t_approved && !s->t_active && !s->t_locked ? S_DONE : S_LATER;
+    m[11] = !s->t_active && !strcmp(s->gate, "green") ? S_DONE : S_TODO;
+    static const int order[] = {2, 3, 4, 5, 6, 7, 0, 8, 9, 10, 11};
+    int next = -1;
+    for (int i = 0; i < 11 && next < 0; i++) if (m[order[i]] != S_DONE) next = order[i];
+
+    heading("STEPS  (each button runs the stategate command shown)");
+    CLAY(step_decl()) {
+        step_head(1, "Project folder", m[1], 0, short_path(app.project));
+        button("Switch", A_HOME, 0, !busy, 0);
+    }
+    CLAY(step_decl()) {
+        step_head(2, "Git repository", m[2], next == 2, s->git ? (s->has_commit ? "ready" : "ready, no commits yet") : "$ git init");
+        if (!s->git) button("git init", A_GIT_INIT, 0, !busy, next == 2);
+    }
+    CLAY(step_decl()) {
+        step_head(3, "Set up stategate", m[3], next == 3, s->init ? "AGENTS.md, CLAUDE.md, CHANGELOG.md, pre-commit hook" : "$ stategate init");
+        if (!s->init) button("Set up", A_INIT, 0, !busy, next == 3);
+    }
+    CLAY(step_decl()) {
+        step_head(4, "Write the state machine (by hand)", m[4], next == 4,
+                  !has_model ? "create the model .yaml in this folder with your editor" :
+                  s->valid ? app.model_path : "the model has errors: see Validate");
+        if (has_model) button("Open in editor", A_EDIT, 0, 1, 0);
+    }
+    CLAY(step_decl()) {
+        step_head(5, "Validate", m[5], next == 5, "$ stategate validate");
+        button("Validate", A_VALIDATE, 0, !busy && has_model, next == 5);
+    }
+    CLAY(step_decl()) {
+        step_head(6, "Generate code and tests", m[6], next == 6, s->generated ? "up to date with the model" : "$ stategate gen");
+        button("Generate", A_GEN, 0, !busy && s->valid, next == 6);
+    }
+    CLAY(step_decl()) {
+        step_head(7, "Sign off locked safety items", m[7], next == 7,
+                  !s->valid ? "$ stategate signoff" : !s->locked_items ? "nothing is locked: not needed" :
+                  s->signed_off ? "signed" : "$ stategate signoff  (you confirm)");
+        if (s->valid && s->locked_items && !s->signed_off) button("Sign off...", A_SIGNOFF, 0, !busy, next == 7);
+    }
+    CLAY(step_decl()) {
+        step_head(0, "Save to git", m[0], next == 0,
+                  !s->git ? "needs a repository" : saved ? "everything is committed" :
+                  ticket_work ? "Run gate commits each ticket's work when it passes" : "$ git add -A && git commit  (needed before review)");
+        if (s->git && !saved && !ticket_work) button("Commit", A_COMMIT, 0, !busy && s->dirty, next == 0 && s->dirty);
+    }
+    CLAY(step_decl()) {
+        step_head(8, "Tickets: draft, then your AI fills them in", m[8], next == 8,
+                  s->t_draft ? TextFormat("%d draft(s) need a title and goal from your AI (MCP: fill_ticket)", s->t_draft)
+                             : tickets_any ? TextFormat("%d ticket(s) written", tickets_any) : "$ stategate ticket gen");
+        button("Draft tickets", A_TICKET_GEN, 0, !busy && s->generated && s->init, next == 8 && !s->t_draft);
+    }
+    CLAY(step_decl()) {
+        step_head(9, "Review tickets: approve or skip", m[9], next == 9,
+                  s->t_open ? TextFormat("%d open ticket(s) to review", s->t_open) : "$ stategate ticket start  (you decide)");
+        button("Review...", A_REVIEW, 0, !busy && s->t_open > 0 && saved, next == 9);
+    }
+    CLAY(step_decl()) {
+        step_head(10, "AI writes node logic, ticket by ticket", m[10], next == 10,
+                  *s->current ? TextFormat("active: %s (%s). Ask your AI (MCP: get_task, write_file, run_gate)", s->current, s->current_status) :
+                  s->t_approved ? TextFormat("%d approved, waiting", s->t_approved) : "needs an approved ticket");
+    }
+    CLAY(step_decl()) {
+        step_head(11, "Run the 11 checks", m[11], next == 11,
+                  !strcmp(s->current_status, "active") ? "$ stategate ticket run  (green commits and finishes the ticket)" : "$ stategate gate");
+        button("Run gate", A_GATE, 0, !busy && has_model, next == 11);
+    }
+}
+
+static void steps_card(void) {
+    CLAY(card()) { steps_card_body(); }
+}
+
+static void output_body(void) {
+    const Job *j = &app.job;
+    heading("OUTPUT");
+    if (!j->title[0]) { CLAY_TEXT(cs("Nothing run yet. Each step's button shows its output here."), T(14, C_QUIET)); return; }
+    CLAY_TEXT(csf("$ %s", j->title), T(14, C_INK));
+    CLAY_TEXT(cs(j->running ? "running..." : j->exit_code == 0 ? "finished" : TextFormat("failed (exit %d)", j->exit_code)),
+              T(14, j->running ? C_ACCENT : j->exit_code == 0 ? C_GREEN : C_RED));
+    if (!j->pty) CLAY_TEXT(tail_lines(&j->out, 0, 24), T(13, C_INK));
+}
+
+static void output_card(void) {
+    Clay_ElementDeclaration d = card();
+    d.id = CLAY_ID("Output");
+    d.clip.horizontal = true;
+    CLAY(d) { output_body(); }
 }
 
 /* Card bodies return early freely: the CLAY() block that wraps them
@@ -516,7 +856,8 @@ static void sim_body(void) {
             const char *ev = app.model.events.v[i];
             const char *target = state_target(s, ev);
             const State *t = target ? model_state(&app.model, target) : NULL;
-            CLAY({.id = CLAY_IDI("Event", i),
+            Clay_ElementId id = CLAY_IDI("Event", i);
+            CLAY({.id = id,
                   .layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {10, 10, 6, 6}, .childGap = 8},
                   .backgroundColor = target ? (Clay_Hovered() ? C_BTN_HOVER : C_BTN) : C_BTN_OFF,
                   .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
@@ -524,11 +865,14 @@ static void sim_body(void) {
                 CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
                 CLAY_TEXT(t ? csf("-> %s", t->name) : cs("ignored"), T(14, target ? C_ACCENT : C_QUIET));
             }
+            button_reg(id, A_EVENT, i, NULL);
         }
-        CLAY({.id = CLAY_ID("Reset"), .layout = {.padding = {10, 10, 6, 6}},
+        Clay_ElementId rid = CLAY_ID("Reset");
+        CLAY({.id = rid, .layout = {.padding = {10, 10, 6, 6}},
               .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_BTN_OFF, .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
             CLAY_TEXT(cs("Reset to initial state"), T(14, C_INK));
         }
+        button_reg(rid, A_RESET, 0, NULL);
     }
     if (*app.flash) CLAY_TEXT(cs(app.flash), T(14, C_AMBER));
     for (int i = app.history.n - 1; i >= 0; i--) CLAY_TEXT(cs(app.history.v[i]), T(13, i == app.history.n - 1 ? C_INK : C_QUIET));
@@ -538,7 +882,7 @@ static void sim_card(void) {
     CLAY(card()) { sim_body(); }
 }
 
-static void steps_body(void) {
+static void ladder_body(void) {
     heading("STEP LADDER");
     if (!app.have_model || !app.model.n_steps) { CLAY_TEXT(cs("No steps in the model"), T(14, C_QUIET)); return; }
     for (int i = 0; i < app.model.n_steps; i++) {
@@ -549,8 +893,8 @@ static void steps_body(void) {
     }
 }
 
-static void steps_card(void) {
-    CLAY(card()) { steps_body(); }
+static void ladder_card(void) {
+    CLAY(card()) { ladder_body(); }
 }
 
 static void errors_card(void) {
@@ -561,56 +905,425 @@ static void errors_card(void) {
     }
 }
 
-static Clay_RenderCommandArray build_panel(void) {
+static void header_row(void) {
+    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 8, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+        CLAY_TEXT(cs("stategate"), T(22, C_INK));
+        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
+        button("Projects", A_HOME, 0, !app.job.running, 0);
+        button("Quit", A_QUIT, 0, 1, 0);
+    }
+}
+
+/* ---- the modal: a pty command waiting for the person ---- */
+
+static void modal_body(void) {
+    const Job *j = &app.job;
+    Question q = job_question();
+    CLAY_TEXT(csf("$ %s", j->title), T(15, C_QUIET));
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(12)},
+          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+        CLAY_TEXT(tail_lines(&j->out, app.modal_from, 40), T(15, C_INK));
+    }
+    CLAY({.layout = {.childGap = 10}}) {
+        if (q == Q_SIGNOFF) {
+            button("Sign off", A_MODAL_SEND, 1, 1, 1);
+            button("Cancel", A_MODAL_SEND, 0, 1, 0);
+        } else if (q == Q_REVIEW) {
+            button("Approve", A_MODAL_SEND, 2, 1, 1);
+            button("Skip", A_MODAL_SEND, 3, 1, 0);
+            button("Stop reviewing", A_MODAL_SEND, 4, 1, 0);
+        } else if (j->running) {
+            CLAY_TEXT(cs("working..."), T(15, C_ACCENT));
+            button("Stop", A_MODAL_STOP, 0, 1, 0);
+        } else {
+            CLAY_TEXT(cs(j->exit_code == 0 ? "Done." : "Finished without a change."), T(15, j->exit_code == 0 ? C_GREEN : C_AMBER));
+            button("Close", A_MODAL_CLOSE, 0, 1, 1);
+        }
+    }
+}
+
+static void modal_layer(void) {
+    if (!app.modal) return;
+    CLAY({.id = CLAY_ID("Modal"),
+          .layout = {.sizing = {CLAY_SIZING_FIXED((float)GetScreenWidth()), CLAY_SIZING_FIXED((float)GetScreenHeight())},
+                     .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}},
+          .backgroundColor = {20, 20, 25, 120},
+          .floating = {.attachTo = CLAY_ATTACH_TO_ROOT, .zIndex = 10}}) {
+        CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_FIXED(760)}, .padding = CLAY_PADDING_ALL(20), .childGap = 12},
+              .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(10), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
+            modal_body();
+        }
+    }
+}
+
+static Clay_RenderCommandArray build_project(void) {
     Clay_BeginLayout();
     CLAY({.id = CLAY_ID("Root"), .layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}}}) {
         CLAY({.id = CLAY_ID("CanvasSpace"), .layout = {.sizing = {.width = CLAY_SIZING_PERCENT(2.0f / 3.0f), .height = CLAY_SIZING_GROW(0)}}}) {}
         CLAY({.id = CLAY_ID("Panel"),
-              .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(14), .childGap = 12},
+              .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_PERCENT(1.0f / 3.0f), CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(14), .childGap = 12},
               .backgroundColor = C_PANEL,
               .border = {.color = C_RULE, .width = {.left = 1}},
               .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
-            CLAY_TEXT(cs("stategate"), T(22, C_INK));
-            CLAY_TEXT(csf("%s  (live reload)", app.model_path), T(13, C_QUIET));
+            header_row();
             errors_card();
+            steps_card();
+            output_card();
             gate_card();
             sim_card();
-            steps_card();
+            ladder_card();
+        }
+        modal_layer();
+    }
+    return Clay_EndLayout();
+}
+
+/* ---- home screen: open or create a project ---- */
+
+static char *recent_path(void) {
+    static char p[PATH_MAX];
+    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+    if (xdg && *xdg) snprintf(p, sizeof p, "%s/stategate/recent", xdg);
+    else snprintf(p, sizeof p, "%s/.config/stategate/recent", home ? home : ".");
+    return p;
+}
+
+static void recent_load(void) {
+    for (int i = 0; i < app.recent.n; i++) free(app.recent.v[i]);
+    app.recent.n = 0;
+    char *text = read_file(recent_path(), NULL);
+    if (!text) return;
+    char *save = NULL;
+    for (char *l = strtok_r(text, "\n", &save); l; l = strtok_r(NULL, "\n", &save)) {
+        struct stat st;
+        if (*l && stat(l, &st) == 0 && S_ISDIR(st.st_mode) && !sl_contains(&app.recent, l) && app.recent.n < 10) sl_push(&app.recent, l);
+    }
+    free(text);
+}
+
+static void recent_add(const char *dir) {
+    recent_load();
+    SB b;
+    sb_init(&b);
+    sb_printf(&b, "%s\n", dir);
+    for (int i = 0; i < app.recent.n && i < 9; i++)
+        if (strcmp(app.recent.v[i], dir)) sb_printf(&b, "%s\n", app.recent.v[i]);
+    char dirpath[PATH_MAX];
+    snprintf(dirpath, sizeof dirpath, "%s", recent_path());
+    *strrchr(dirpath, '/') = 0;
+    mkdirs(dirpath);
+    write_file(recent_path(), b.s, b.len);
+    free(b.s);
+}
+
+static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+static void browse_to(const char *dir) {
+    char real[PATH_MAX];
+    if (!realpath(dir, real)) { snprintf(app.home_msg, sizeof app.home_msg, "no such folder: %s", dir); return; }
+    DIR *d = opendir(real);
+    if (!d) { snprintf(app.home_msg, sizeof app.home_msg, "cannot open %s", real); return; }
+    snprintf(app.browse, sizeof app.browse, "%s", real);
+    snprintf(app.path_in, sizeof app.path_in, "%s", real);
+    for (int i = 0; i < app.dirs.n; i++) free(app.dirs.v[i]);
+    app.dirs.n = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[PATH_MAX];
+        snprintf(p, sizeof p, "%s/%s", real, e->d_name);
+        struct stat st;
+        if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) sl_push(&app.dirs, e->d_name);
+    }
+    closedir(d);
+    qsort(app.dirs.v, (size_t)app.dirs.n, sizeof(char *), cmp_str);
+    app.home_msg[0] = 0;
+}
+
+static int no_recent; /* --screenshot runs leave the recent list alone */
+
+static void open_project(const char *dir) {
+    char real[PATH_MAX];
+    if (!realpath(dir, real) || chdir(real) != 0) {
+        snprintf(app.home_msg, sizeof app.home_msg, "cannot open %s", dir);
+        app.screen = SCREEN_HOME;
+        return;
+    }
+    snprintf(app.project, sizeof app.project, "%s", real);
+    if (!no_recent) recent_add(real);
+    StrList errors = {0};
+    app.model_path = model_find(".", &errors);
+    app.have_model = 0;
+    for (int i = 0; i < app.model_errors.n; i++) free(app.model_errors.v[i]);
+    app.model_errors.n = 0;
+    app.zoom = 1.0f;
+    app.pan = (Vector2){0, 0};
+    sim_reset();
+    app.model_mtime = app.model_path ? mtime_of(app.model_path) : 0;
+    load_model(1);
+    gate_status_free(&app.gate);
+    app.gate_mtime = mtime_of(".fsm/gate.json");
+    gate_status_load(&app.gate, ".fsm/gate.json");
+    job_clear(&app.job);
+    app.modal = 0;
+    app.screen = SCREEN_PROJECT;
+    refresh_status();
+    SetWindowTitle(TextFormat("stategate - %s", real));
+}
+
+static void text_field(int which, char *buf, const char *placeholder, float width) {
+    Clay_ElementId id = CLAY_IDI("Field", which);
+    int focused = app.focus == which;
+    CLAY({.id = id,
+          .layout = {.sizing = {.width = width > 0 ? CLAY_SIZING_FIXED(width) : CLAY_SIZING_GROW(0)}, .padding = {10, 10, 7, 7}},
+          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(6), .clip = {.horizontal = true},
+          .border = {.color = focused ? C_ACCENT : C_RULE, .width = {1, 1, 1, 1, 0}}}) {
+        if (*buf || focused) CLAY_TEXT(csf("%s%s", buf, focused && ((int)(GetTime() * 2) % 2) ? "|" : ""), T(15, C_INK));
+        else CLAY_TEXT(cs(placeholder), T(15, C_QUIET));
+    }
+    button_reg(id, A_FOCUS, which, NULL);
+}
+
+static void home_open_body(void) {
+    heading("OPEN OR CREATE A PROJECT FOLDER");
+    CLAY({.layout = {.childGap = 8, .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
+        text_field(1, app.path_in, "/path/to/folder", 0);
+        button("Go", A_GO_PATH, 0, 1, 0);
+        button("Up", A_BROWSE_UP, 0, 1, 0);
+    }
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(420)}, .padding = CLAY_PADDING_ALL(6), .childGap = 2},
+          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(6), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
+          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
+        if (!app.dirs.n) CLAY_TEXT(cs("(no folders here)"), T(14, C_QUIET));
+        for (int i = 0; i < app.dirs.n && i < 400; i++) {
+            Clay_ElementId id = CLAY_IDI("Dir", i);
+            CLAY({.id = id, .layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {8, 8, 4, 4}},
+                  .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(4)}) {
+                CLAY_TEXT(csf("%s/", app.dirs.v[i]), T(15, C_INK));
+            }
+            button_reg(id, A_BROWSE_INTO, i, NULL);
+        }
+    }
+    CLAY({.layout = {.childGap = 8, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+        button("Open this folder", A_OPEN_BROWSE, 0, 1, 1);
+        CLAY_TEXT(cs("or new folder here:"), T(14, C_QUIET));
+        text_field(2, app.name_in, "folder name", 220);
+        button("Create and open", A_CREATE, 0, app.name_in[0] != 0, 0);
+    }
+    if (app.home_msg[0]) CLAY_TEXT(cs(app.home_msg), T(14, C_RED));
+}
+
+static void home_recent_body(void) {
+    heading("RECENT PROJECTS");
+    if (!app.recent.n) CLAY_TEXT(cs("None yet."), T(14, C_QUIET));
+    for (int i = 0; i < app.recent.n; i++) {
+        Clay_ElementId id = CLAY_IDI("Recent", i);
+        const char *slash = strrchr(app.recent.v[i], '/');
+        CLAY({.id = id, .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {10, 10, 6, 6}},
+              .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_BTN, .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+            CLAY_TEXT(cs(slash ? slash + 1 : app.recent.v[i]), T(16, C_INK));
+            CLAY_TEXT(cs(short_path(app.recent.v[i])), T(12, C_QUIET));
+        }
+        button_reg(id, A_OPEN_RECENT, i, NULL);
+    }
+}
+
+static Clay_RenderCommandArray build_home(void) {
+    Clay_BeginLayout();
+    CLAY({.id = CLAY_ID("Home"), .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}, .padding = {60, 60, 40, 40}, .childGap = 20},
+          .backgroundColor = {244, 244, 241, 255}}) {
+        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
+                CLAY_TEXT(cs("stategate"), T(34, C_INK));
+                CLAY_TEXT(cs("Design the state machine, let your AI write the nodes, let the gate decide."), T(16, C_QUIET));
+            }
+            CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
+            button("Quit", A_QUIT, 0, 1, 0);
+        }
+        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 20}}) {
+            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_PERCENT(0.62f)}, .padding = CLAY_PADDING_ALL(16), .childGap = 10},
+                  .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(8), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
+                home_open_body();
+            }
+            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(16), .childGap = 8},
+                  .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(8), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
+                home_recent_body();
+            }
         }
     }
     return Clay_EndLayout();
 }
 
-static void handle_panel_clicks(void) {
-    if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || !app.have_model) return;
-    for (int i = 0; i < app.model.events.n && i < 64; i++)
-        if (Clay_PointerOver(Clay_GetElementIdWithIndex(CLAY_STRING("Event"), (uint32_t)i))) sim_send(app.model.events.v[i]);
-    if (Clay_PointerOver(Clay_GetElementId(CLAY_STRING("Reset")))) sim_reset();
+static void go_home(void) {
+    app.screen = SCREEN_HOME;
+    app.focus = 0;
+    recent_load();
+    browse_to(app.project[0] ? app.project : app.browse[0] ? app.browse : (getenv("HOME") ? getenv("HOME") : "/"));
+    if (app.project[0]) {
+        char parent[PATH_MAX];
+        snprintf(parent, sizeof parent, "%s/..", app.project);
+        browse_to(parent);
+    }
+    SetWindowTitle("stategate");
+}
+
+/* ---- input ---- */
+
+static int quit_requested;
+
+static void open_in_editor(const char *path) {
+    char cmd[PATH_MAX + 64];
+#ifdef __APPLE__
+    snprintf(cmd, sizeof cmd, "open '%s' >/dev/null 2>&1 &", path);
+#else
+    snprintf(cmd, sizeof cmd, "xdg-open '%s' >/dev/null 2>&1 &", path);
+#endif
+    if (system(cmd) != 0) { /* nothing to do: the editor is the person's own */ }
+}
+
+static void dispatch(UiAction a, int arg) {
+    switch (a) {
+    case A_NONE: break;
+    case A_EVENT: if (app.have_model && arg < app.model.events.n) sim_send(app.model.events.v[arg]); break;
+    case A_RESET: sim_reset(); break;
+    case A_HOME: go_home(); break;
+    case A_QUIT: quit_requested = 1; break;
+    case A_GIT_INIT: { char *argv[] = {"git", "init", NULL}; job_start(&app.job, "git init", argv, 0); app.modal = 0; break; }
+    case A_INIT: run_cli("stategate init", 0, "init", NULL, NULL); break;
+    case A_EDIT: if (app.model_path) open_in_editor(app.model_path); break;
+    case A_VALIDATE: run_cli("stategate validate", 0, "validate", NULL, NULL); break;
+    case A_GEN: run_cli("stategate gen", 0, "gen", NULL, NULL); break;
+    case A_SIGNOFF: run_cli("stategate signoff", 1, "signoff", NULL, NULL); break;
+    case A_COMMIT: run_shell("git add -A && git commit -m \"stategate: model and generated code\"",
+                             "git add -A && git commit -q -m 'stategate: model and generated code' && git log --oneline -1"); break;
+    case A_TICKET_GEN: run_cli("stategate ticket gen", 0, "ticket", "gen", NULL); break;
+    case A_REVIEW: run_cli("stategate ticket start", 1, "ticket", "start", NULL); break;
+    case A_GATE:
+        if (!strcmp(app.st.current_status, "active")) run_cli("stategate ticket run", 0, "ticket", "run", NULL);
+        else run_cli("stategate gate", 0, "gate", NULL, NULL);
+        break;
+    case A_MODAL_SEND: {
+        static const char *answers[] = {"no", "sign off", "approve", "skip", "quit"};
+        if (arg >= 0 && arg < 5) {
+            app.modal_from = app.job.out.len;
+            job_send(&app.job, answers[arg]);
+        }
+        break;
+    }
+    case A_MODAL_STOP: job_stop(&app.job); break;
+    case A_MODAL_CLOSE: app.modal = 0; refresh_status(); break;
+    case A_BROWSE_INTO:
+        if (arg < app.dirs.n) {
+            char p[PATH_MAX];
+            snprintf(p, sizeof p, "%s/%s", app.browse, app.dirs.v[arg]);
+            browse_to(p);
+        }
+        break;
+    case A_BROWSE_UP: { char p[PATH_MAX]; snprintf(p, sizeof p, "%s/..", app.browse); browse_to(p); break; }
+    case A_GO_PATH: {
+        char p[PATH_MAX];
+        if (app.path_in[0] == '~') snprintf(p, sizeof p, "%s%s", getenv("HOME") ? getenv("HOME") : "", app.path_in + 1);
+        else snprintf(p, sizeof p, "%s", app.path_in);
+        browse_to(p);
+        break;
+    }
+    case A_OPEN_BROWSE: open_project(app.browse); break;
+    case A_OPEN_RECENT: if (arg < app.recent.n) open_project(app.recent.v[arg]); break;
+    case A_CREATE: {
+        if (strchr(app.name_in, '/') || !strcmp(app.name_in, ".") || !strcmp(app.name_in, "..")) {
+            snprintf(app.home_msg, sizeof app.home_msg, "a folder name, not a path");
+            break;
+        }
+        char p[PATH_MAX];
+        snprintf(p, sizeof p, "%s/%s", app.browse, app.name_in);
+        if (mkdir(p, 0755) != 0 && access(p, F_OK) != 0) { snprintf(app.home_msg, sizeof app.home_msg, "cannot create %s", p); break; }
+        app.name_in[0] = 0;
+        open_project(p);
+        break;
+    }
+    case A_FOCUS: app.focus = arg; break;
+    }
+}
+
+static void handle_clicks(void) {
+    if (!IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) return;
+    int modal = app.screen == SCREEN_PROJECT && app.modal;
+    int hit = 0;
+    /* Later registrations draw on top (the modal), so search from the end. */
+    for (int i = n_buttons - 1; i >= 0; i--) {
+        if (!Clay_PointerOver(buttons[i].id)) continue;
+        UiAction a = buttons[i].action;
+        if (modal && a != A_MODAL_SEND && a != A_MODAL_CLOSE && a != A_MODAL_STOP) continue;
+        dispatch(a, buttons[i].arg);
+        hit = 1;
+        break;
+    }
+    if (!hit && app.screen == SCREEN_HOME) app.focus = 0;
+}
+
+static void handle_typing(void) {
+    if (app.screen != SCREEN_HOME || !app.focus) return;
+    char *buf = app.focus == 1 ? app.path_in : app.name_in;
+    size_t cap = app.focus == 1 ? sizeof app.path_in : sizeof app.name_in;
+    int c;
+    while ((c = GetCharPressed()) > 0) {
+        size_t n = strlen(buf);
+        if (c >= 32 && c < 127 && n + 1 < cap) { buf[n] = (char)c; buf[n + 1] = 0; }
+    }
+    if ((IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && *buf) buf[strlen(buf) - 1] = 0;
+    if (IsKeyPressed(KEY_ENTER)) dispatch(app.focus == 1 ? A_GO_PATH : A_CREATE, 0);
 }
 
 static void clay_error(Clay_ErrorData e) { fprintf(stderr, "clay: %.*s\n", e.errorText.length, e.errorText.chars); }
 
+/* The CLI the buttons run: next to this binary when it is there (a build
+ * tree, or both installed together), else whatever `stategate` is on PATH. */
+static void find_cli(void) {
+    char self[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
+    if (n > 0) {
+        self[n] = 0;
+        char *slash = strrchr(self, '/');
+        if (slash) {
+            *slash = 0;
+            snprintf(app.sg, sizeof app.sg, "%s/stategate", self);
+            if (access(app.sg, X_OK) == 0) {
+                /* The pre-commit hook calls `stategate` by name: let it find
+                 * this same build even when it is not installed on PATH. */
+                const char *path = getenv("PATH");
+                char *np = malloc(strlen(self) + (path ? strlen(path) : 0) + 2);
+                sprintf(np, "%s:%s", self, path ? path : "");
+                setenv("PATH", np, 1);
+                free(np);
+                return;
+            }
+        }
+    }
+    snprintf(app.sg, sizeof app.sg, "stategate");
+}
+
 int main(int argc, char **argv) {
-    const char *dir = ".", *shot = NULL, *sends = NULL;
+    const char *dir = NULL, *shot = NULL, *sends = NULL;
+    int windowed = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--send") && i + 1 < argc) sends = argv[++i];
+        else if (!strcmp(argv[i], "--windowed")) windowed = 1;
         else if (argv[i][0] != '-') dir = argv[i];
         else {
-            fprintf(stderr, "usage: stategate-view [project dir] [--send EV1,EV2] [--screenshot out.png]\n");
+            fprintf(stderr, "usage: stategate-view [project dir] [--windowed] [--send EV1,EV2] [--screenshot out.png]\n"
+                            "  no project dir: start on the projects screen\n");
             return 2;
         }
     }
-    if (chdir(dir) != 0) { perror(dir); return 2; }
-    StrList errors = {0};
-    char *path = model_find(".", &errors);
-    if (!path) { fprintf(stderr, "%s\n", errors.v[0]); return 2; }
-    app.model_path = path;
+    find_cli();
     app.zoom = 1.0f;
 
     SetTraceLogLevel(LOG_WARNING);
     Clay_Raylib_Initialize(1440, 900, "stategate", FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | (shot ? FLAG_WINDOW_HIDDEN : 0));
     SetTargetFPS(60);
+    SetExitKey(KEY_NULL); /* Esc closes dialogs, not the app */
+    if (!shot && !windowed) ToggleBorderlessWindowed();
     uint64_t mem = Clay_MinMemorySize();
     Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(mem, malloc(mem)),
                     (Clay_Dimensions){(float)GetScreenWidth(), (float)GetScreenHeight()}, (Clay_ErrorHandler){clay_error, 0});
@@ -626,36 +1339,59 @@ int main(int argc, char **argv) {
     app.font = fonts[0];
     Clay_SetMeasureTextFunction(Raylib_MeasureText, fonts);
 
-    app.model_mtime = mtime_of(app.model_path);
-    load_model(1);
-    app.gate_mtime = mtime_of(".fsm/gate.json");
-    gate_status_load(&app.gate, ".fsm/gate.json");
-    if (sends) {
+    job_clear(&app.job);
+    no_recent = shot != NULL;
+    if (dir) open_project(dir);
+    if (app.screen != SCREEN_PROJECT) go_home();
+    if (sends && app.screen == SCREEN_PROJECT) {
         char *list = xstrdup(sends), *save = NULL;
         for (char *e = strtok_r(list, ",", &save); e; e = strtok_r(NULL, ",", &save)) sim_send(e);
     }
 
     double last_poll = 0;
     int frames = 0;
-    while (!WindowShouldClose()) {
-        if (GetTime() - last_poll > 0.5) { poll_files(); last_poll = GetTime(); }
+    while (!WindowShouldClose() && !quit_requested) {
+        if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
+        if (app.screen == SCREEN_PROJECT) {
+            if (GetTime() - last_poll > 0.5) { poll_files(); last_poll = GetTime(); }
+            if (job_poll(&app.job) && !app.job.running) {
+                refresh_status();
+                if (!app.job.pty) app.modal = 0;
+            }
+            if (!app.job.running && GetTime() - app.status_at > 3.0) refresh_status();
+            if (IsKeyPressed(KEY_ESCAPE) && app.modal) {
+                if (app.job.running) job_stop(&app.job);
+                else app.modal = 0;
+            }
+        }
         arena_used = 0;
+        n_buttons = 0;
         Clay_SetLayoutDimensions((Clay_Dimensions){(float)GetScreenWidth(), (float)GetScreenHeight()});
         Vector2 mouse = GetMousePosition();
         Clay_SetPointerState((Clay_Vector2){mouse.x, mouse.y}, IsMouseButtonDown(MOUSE_BUTTON_LEFT));
-        if (mouse.x > canvas_width()) {
-            Vector2 wheel = GetMouseWheelMoveV();
-            Clay_UpdateScrollContainers(true, (Clay_Vector2){wheel.x, wheel.y * 3}, GetFrameTime());
-        } else {
-            Clay_UpdateScrollContainers(false, (Clay_Vector2){0, 0}, GetFrameTime());
+        int panel_scroll = app.screen == SCREEN_HOME || mouse.x > canvas_width() || app.modal;
+        Vector2 wheel = panel_scroll ? GetMouseWheelMoveV() : (Vector2){0, 0};
+        Clay_UpdateScrollContainers(true, (Clay_Vector2){wheel.x, wheel.y * 3}, GetFrameTime());
+        if (app.screen == SCREEN_PROJECT && !app.modal) handle_canvas_input();
+        handle_typing();
+        if (app.show_output && app.screen == SCREEN_PROJECT && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            /* Wait for the release: while the button is down, Clay's drag scrolling owns the offset. */
+            /* Bring the output card to the top of the panel so a result is seen. */
+            Clay_ScrollContainerData sc = Clay_GetScrollContainerData(CLAY_ID("Panel"));
+            Clay_ElementData out = Clay_GetElementData(CLAY_ID("Output"));
+            if (sc.found && out.found) {
+                float y = sc.scrollPosition->y - (out.boundingBox.y - 14);
+                float min = -(sc.contentDimensions.height - sc.scrollContainerDimensions.height);
+                sc.scrollPosition->y = y > 0 ? 0 : y < min ? (min < 0 ? min : 0) : y;
+            }
+            app.show_output = 0;
         }
-        handle_canvas_input();
-        Clay_RenderCommandArray cmds = build_panel();
-        handle_panel_clicks();
+        Clay_RenderCommandArray cmds = app.screen == SCREEN_HOME ? build_home() : build_project();
+        handle_clicks();
 
         BeginDrawing();
         ClearBackground(BG);
-        draw_canvas();
+        if (app.screen == SCREEN_PROJECT) draw_canvas();
         Clay_Raylib_Render(cmds, fonts);
         EndDrawing();
 
@@ -667,6 +1403,7 @@ int main(int argc, char **argv) {
             break;
         }
     }
+    if (app.job.running) job_stop(&app.job);
     Clay_Raylib_Close();
     return 0;
 }

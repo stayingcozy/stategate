@@ -15,9 +15,14 @@ jobs:
         run: scripts/mcp_smoke.py
       - name: Viewer smoke test
         run: |
-          xvfb-run -a -s "-screen 0 1440x900x24" build/stategate-view examples/posture --send POWER_ON,CALIBRATED --screenshot "$PWD/viewer.png"
+          xvfb-run -a -s "-screen 0 1440x900x24" build/stategate-view examples/posture --send POWER_ON,CALIBRATED --screenshot "$PWD/viewer.png" 2> viewer.err
           test -s viewer.png
+          HOME="$RUNNER_TEMP" xvfb-run -a -s "-screen 0 1440x900x24" build/stategate-view --screenshot "$PWD/home.png" 2> home.err
+          test -s home.png
+          if grep "^clay:" viewer.err home.err; then exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
-          name: viewer-screenshot
-          path: viewer.png
+          name: app-screenshots
+          path: |
+            viewer.png
+            home.png

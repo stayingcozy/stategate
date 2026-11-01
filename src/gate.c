@@ -573,6 +573,92 @@ int cmd_gate(const char *model_path, int release) {
     return ok ? 0 : 1;
 }
 
+/* ---- status: one snapshot of every step, for people and for the app ---- */
+
+static int dir_exists(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static void json_bool(SB *b, const char *key, int v) { sb_printf(b, "  \"%s\": %s,\n", key, v ? "true" : "false"); }
+
+int cmd_status(const char *model_path, int json) {
+    int st;
+    char *inside = run_capture("git rev-parse --is-inside-work-tree 2>/dev/null", &st);
+    int git = st == 0 && !strncmp(inside, "true", 4);
+    char *head = git ? run_capture("git rev-parse --verify -q HEAD 2>/dev/null", &st) : xstrdup("");
+    int has_commit = git && st == 0 && *head;
+    char *porcelain = git ? run_capture("git status --porcelain -- . ':(exclude)" TICKETS_DIR "' 2>/dev/null", &st) : xstrdup("");
+    int dirty = git && *porcelain;
+    int init = file_exists("AGENTS.md") && dir_exists(".fsm");
+
+    SgModel m;
+    memset(&m, 0, sizeof m);
+    StrList e1 = {0}, e2 = {0}, e3 = {0}, drift = {0};
+    int valid = model_path && validate_all(model_path, &m, &e1, &e2, &e3) == 0;
+    int generated = 0, locked = 0, signed_off = 0;
+    if (valid) {
+        GenSet g = {0};
+        gen_rust(&m, &g);
+        check_drift(&m, &g, &drift);
+        generated = drift.n == 0;
+        char *canon = locked_canonical(&m);
+        locked = *canon != 0;
+        char *have = read_file(SIGNOFF_PATH, NULL);
+        signed_off = !locked || (have && strstr(have, locked_hash(&m)));
+    }
+    StrList terrs = {0};
+    Tickets ts;
+    tickets_load(&ts, &terrs);
+    const char *names[] = {"draft", "open", "approved", "active", "done", "locked", "split"};
+    int counts[7] = {0};
+    for (int i = 0; i < ts.n; i++)
+        for (int k = 0; k < 7; k++)
+            if (!strcmp(ts.v[i].status, names[k])) counts[k]++;
+    Ticket *cur = ticket_current(&ts);
+    char *gate = read_file(GATE_JSON, NULL);
+    const char *gate_s = !gate ? "none" : strstr(gate, "\"ok\": true") ? "green" : "red";
+
+    if (!json) {
+        printf("git repository   %s\n", !git ? "no (git init)" : !has_commit ? "yes, no commits yet" : dirty ? "yes, uncommitted changes" : "yes, clean");
+        printf("stategate init   %s\n", init ? "yes" : "no (stategate init)");
+        printf("model            %s\n", !model_path ? "none found (write <name>.yaml)" : valid ? model_path : "has errors (stategate validate)");
+        if (valid) {
+            printf("generated        %s\n", generated ? "up to date" : "no (stategate gen)");
+            printf("sign-off         %s\n", !locked ? "not needed (nothing locked)" : signed_off ? "signed" : "needed (stategate signoff)");
+        }
+        printf("tickets          ");
+        int any = 0;
+        for (int k = 0; k < 7; k++) if (counts[k]) { printf("%s%d %s", any ? ", " : "", counts[k], names[k]); any = 1; }
+        printf("%s\n", any ? "" : "none");
+        if (cur) printf("current ticket   %s (%s)\n", cur->id, cur->status);
+        printf("last gate        %s\n", gate_s);
+        return 0;
+    }
+    SB b;
+    sb_init(&b);
+    sb_puts(&b, "{\n");
+    json_bool(&b, "git", git);
+    json_bool(&b, "has_commit", has_commit);
+    json_bool(&b, "dirty", dirty);
+    json_bool(&b, "init", init);
+    sb_puts(&b, "  \"model\": ");
+    if (model_path) json_str(&b, model_path); else sb_puts(&b, "null");
+    sb_puts(&b, ",\n");
+    json_bool(&b, "valid", valid);
+    json_bool(&b, "generated", generated);
+    json_bool(&b, "locked_items", locked);
+    json_bool(&b, "signed_off", signed_off);
+    sb_puts(&b, "  \"tickets\": {");
+    for (int k = 0; k < 7; k++) sb_printf(&b, "%s\"%s\": %d", k ? ", " : "", names[k], counts[k]);
+    sb_puts(&b, "},\n  \"current_ticket\": ");
+    if (cur) { json_str(&b, cur->id); sb_puts(&b, ",\n  \"current_status\": "); json_str(&b, cur->status); }
+    else sb_puts(&b, "null,\n  \"current_status\": null");
+    sb_printf(&b, ",\n  \"gate\": \"%s\"\n}\n", gate_s);
+    fputs(b.s, stdout);
+    return 0;
+}
+
 /* ---- init ---- */
 
 static const char *AGENTS_MD =
@@ -667,7 +753,8 @@ int cmd_init(const char *model_path) {
     } else {
         printf("  not a git repository root: pre-commit hook not installed\n");
     }
-    printf("initialized. Next: stategate gen, then stategate signoff\n");
+    if (file_exists(model_path)) printf("initialized. Next: stategate gen, then stategate signoff\n");
+    else printf("initialized. Next: write %s, then stategate validate and stategate gen\n", model_path);
     return 0;
 }
 

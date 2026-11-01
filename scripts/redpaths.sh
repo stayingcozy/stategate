@@ -284,5 +284,18 @@ out=$("$SG" gate 2>&1 || true)
 if echo "$out" | grep -q "nothing is locked: no sign-off needed"; then ok "no locked items, no sign-off needed"
 else bad "no locked items, no sign-off needed" "expected signoff to pass"; fi
 
+# `stategate status --json` is what the app reads to show each step.
+fresh="$WORK/fresh"
+rm -rf "$fresh"; mkdir -p "$fresh"; cd "$fresh"
+out=$("$SG" status --json)
+if echo "$out" | grep -q '"git": false' && echo "$out" | grep -q '"model": null'; then ok "status in an empty folder: no git, no model"
+else bad "status in an empty folder: no git, no model" "$out"; fi
+git init -q . && "$SG" init > /dev/null
+cp "$ROOT/examples/posture/posture.yaml" fresh.yaml
+out=$("$SG" status --json)
+if echo "$out" | grep -q '"init": true' && echo "$out" | grep -q '"valid": true' && echo "$out" | grep -q '"generated": false' \
+    && echo "$out" | grep -q '"signed_off": false'; then ok "status after init and a model: valid, not generated, not signed"
+else bad "status after init and a model: valid, not generated, not signed" "$out"; fi
+
 echo "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]
