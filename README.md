@@ -123,8 +123,10 @@ stategate-view              # opens on the projects screen
 stategate-view ~/dev/cot    # opens that project
 ```
 
-It opens full screen; F11 switches to a window and back, `--windowed` starts
-in one. The projects screen browses folders, opens one, creates a new folder
+It opens maximized, title bar and all; F11 switches to full screen and back,
+and `--windowed` starts in a normal window. Text, spacing and nodes grow with
+the window, and Ctrl + / Ctrl - / Ctrl 0 make text larger, smaller or default
+(saved in `~/.config/stategate/text_size`). The projects screen browses folders, opens one, creates a new folder
 under the one you are in, and lists recent projects.
 
 A project shows the machine on the left, drawn from the layout saved in the

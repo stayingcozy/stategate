@@ -88,6 +88,8 @@ typedef struct {
     int focus; /* 0 none, 1 path field, 2 new-folder name, 3 AI command */
     char home_msg[256];
     int show_output; /* scroll the panel to the output card next frame */
+    float ui;        /* text and spacing scale: grows with the window, Ctrl +/- adjust */
+    float ui_mult;   /* the person's Ctrl +/- factor on top */
 
     /* Your AI: a command the prompt is piped into, or empty to copy it. */
     char ai_cmd[1024], ai_in[1024];
@@ -236,14 +238,14 @@ static float canvas_width(void) { return floorf(GetScreenWidth() * 2.0f / 3.0f);
 
 static float node_height(const State *s) {
     int lines = 1 + (s->entry.n ? 1 : 0) + (s->exit.n ? 1 : 0) + (s->invoke.n ? 1 : 0) + (s->has_after ? 1 : 0);
-    return 22.0f + lines * 18.0f;
+    return (22.0f + lines * 18.0f) * app.ui;
 }
 
 static Vector2 text_size(const char *s, float size);
 
 /* Width in world units: the widest line at zoom 1, plus padding. */
 static float node_width(const State *s) {
-    float w = text_size(s->name, 18.0f).x;
+    float w = text_size(s->name, 18.0f * app.ui).x;
     char line[256];
     const StrList *lists[3] = {&s->entry, &s->exit, &s->invoke};
     const char *prefix[3] = {"entry: ", "exit: ", "invoke: "};
@@ -254,13 +256,13 @@ static float node_width(const State *s) {
             strncat(line, i ? ", " : "", sizeof line - strlen(line) - 1);
             strncat(line, lists[k]->v[i], sizeof line - strlen(line) - 1);
         }
-        w = fmaxf(w, text_size(line, 13.5f).x);
+        w = fmaxf(w, text_size(line, 13.5f * app.ui).x);
     }
     if (s->has_after) {
         snprintf(line, sizeof line, "after %ld ms: %s", s->after_ms, s->after_event);
-        w = fmaxf(w, text_size(line, 13.5f).x);
+        w = fmaxf(w, text_size(line, 13.5f * app.ui).x);
     }
-    return fmaxf(NODE_W, w + 26.0f);
+    return fmaxf(NODE_W * app.ui, w + 26.0f * app.ui);
 }
 
 static Vector2 world_to_screen(Vector2 w) {
@@ -285,7 +287,7 @@ static void fit_view(void) {
     float cw = canvas_width(), ch = (float)GetScreenHeight();
     float margin = 60.0f;
     float zx = (cw - 2 * margin) / fmaxf(1.0f, maxx - minx), zy = (ch - 2 * margin) / fmaxf(1.0f, maxy - miny);
-    app.zoom = fminf(1.6f, fmaxf(0.3f, fminf(zx, zy)));
+    app.zoom = fminf(2.0f, fmaxf(0.3f, fminf(zx, zy)));
     app.pan.x = (cw - (maxx - minx) * app.zoom) / 2 - minx * app.zoom;
     app.pan.y = (ch - (maxy - miny) * app.zoom) / 2 - miny * app.zoom;
 }
@@ -336,7 +338,7 @@ static void edge_label(const char *label, Vector2 at, int hot) {
 }
 
 static void draw_label(const char *label, Vector2 at, int hot) {
-    float fs = 14.0f * app.zoom;
+    float fs = 14.0f * app.ui * app.zoom;
     if (fs < 8) return;
     Vector2 sz = text_size(label, fs);
     Rectangle bg = {at.x - sz.x / 2 - 4, at.y - sz.y / 2 - 2, sz.x + 8, sz.y + 4};
@@ -408,7 +410,7 @@ static void draw_list_line(const char *prefix, const StrList *l, float x, float 
         if (action_locked(l->v[k])) locked = 1;
     }
     text(line, x, *y, fs, locked ? LOCKED : QUIET);
-    *y += 18.0f * app.zoom;
+    *y += 18.0f * app.ui * app.zoom;
 }
 
 static void draw_nodes(void) {
@@ -425,11 +427,11 @@ static void draw_nodes(void) {
             DrawLineEx(dot, (Vector2){r.x, dot.y}, 1.4f * fmaxf(0.7f, app.zoom), INK);
             arrow_head((Vector2){r.x, dot.y}, dot, INK);
         }
-        float fs = 18.0f * app.zoom, small = 13.5f * app.zoom;
+        float u = app.ui * app.zoom, fs = 18.0f * u, small = 13.5f * u;
         if (fs < 6) continue;
-        float x = r.x + 12 * app.zoom, y = r.y + 10 * app.zoom;
+        float x = r.x + 12 * u, y = r.y + 10 * u;
         text(s->name, x, y, fs, active ? ACCENT : INK);
-        y += 26.0f * app.zoom;
+        y += 26.0f * u;
         if (small < 7) continue;
         if (s->entry.n) draw_list_line("entry: ", &s->entry, x, &y, small);
         if (s->exit.n) draw_list_line("exit: ", &s->exit, x, &y, small);
@@ -449,7 +451,7 @@ static void draw_nodes(void) {
         Rectangle r = node_rect(s);
         char line[160];
         snprintf(line, sizeof line, "locked: at most %ld ms (%s)", v->limit_ms, v->id);
-        text(line, r.x + 4 * app.zoom, r.y + r.height + 6 * app.zoom, 13.0f * app.zoom, LOCKED);
+        text(line, r.x + 4 * app.zoom, r.y + r.height + 6 * app.zoom, 13.0f * app.ui * app.zoom, LOCKED);
     }
 }
 
@@ -468,15 +470,16 @@ static void draw_canvas(void) {
         /* Labels last, so no node hides them. */
         for (int i = 0; i < n_labels; i++) draw_label(labels[i].text, labels[i].at, labels[i].hot);
     } else {
-        if (app.model_path) text("No valid model loaded yet. See the panel for errors.", 24, 24, 18, QUIET);
+        float u = app.ui;
+        if (app.model_path) text("No valid model loaded yet. See the panel for errors.", 24 * u, 24 * u, 18 * u, QUIET);
         else {
-            text("No model in this folder yet.", 24, 24, 22, INK);
+            text("No model in this folder yet.", 24 * u, 24 * u, 22 * u, INK);
             text(TextFormat("Write %s.yaml here with your editor (examples/posture/posture.yaml is a template).",
-                            strrchr(app.project, '/') ? strrchr(app.project, '/') + 1 : "model"), 24, 58, 16, QUIET);
+                            strrchr(app.project, '/') ? strrchr(app.project, '/') + 1 : "model"), 24 * u, 58 * u, 16 * u, QUIET);
             text("It appears here as soon as you save it.", 24, 82, 16, QUIET);
         }
     }
-    text("drag to pan, scroll to zoom, F to fit", 16, ch - 26, 14, QUIET);
+    text("drag to pan, scroll to zoom, F to fit, Ctrl +/- text size", 16 * app.ui, ch - 26 * app.ui, 14 * app.ui, QUIET);
     EndScissorMode();
 }
 
@@ -499,17 +502,22 @@ static void handle_canvas_input(void) {
 
 /* ---- panel (Clay) ---- */
 
+/* Every size in the panel is in points at scale 1; PX() scales it to the
+ * window, like rem units in CSS, so the panel grows with the screen. */
+#define PX(n) ((uint16_t)((n) * app.ui + 0.5f))
+#define PXF(n) ((float)(n) * app.ui)
+
 static Clay_TextElementConfig *T(int size, Clay_Color color) {
-    return CLAY_TEXT_CONFIG({.fontId = FONT_BODY, .fontSize = (uint16_t)size, .textColor = color, .lineHeight = (uint16_t)(size + 6)});
+    return CLAY_TEXT_CONFIG({.fontId = FONT_BODY, .fontSize = PX(size), .textColor = color, .lineHeight = PX(size + 6)});
 }
 
 static void heading(const char *s) { CLAY_TEXT(cs(s), T(13, C_QUIET)); }
 
 static Clay_ElementDeclaration card(void) {
     return (Clay_ElementDeclaration){
-        .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(14), .childGap = 6},
+        .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(PX(14)), .childGap = PX(6)},
         .backgroundColor = C_CARD,
-        .cornerRadius = CLAY_CORNER_RADIUS(8),
+        .cornerRadius = CLAY_CORNER_RADIUS(PX(8)),
         .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
     };
 }
@@ -544,10 +552,10 @@ static void button(const char *label, UiAction a, int arg, int enabled, int prim
     Clay_ElementId id = CLAY_IDI("Btn", seq++ % 100000);
     if (n_buttons == 0) seq = 1; /* ids restart each frame */
     CLAY({.id = id,
-          .layout = {.padding = {12, 12, 6, 6}},
+          .layout = {.padding = {PX(12), PX(12), PX(6), PX(6)}},
           .backgroundColor = !enabled ? C_BTN_OFF : primary ? (Clay_Hovered() ? (Clay_Color){29, 78, 216, 255} : C_ACCENT)
                                                             : (Clay_Hovered() ? C_BTN_HOVER : C_BTN),
-          .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+          .cornerRadius = CLAY_CORNER_RADIUS(PX(6))}) {
         CLAY_TEXT(cs(label), T(14, !enabled ? C_QUIET : primary ? (Clay_Color){255, 255, 255, 255} : C_INK));
     }
     if (enabled) button_reg(id, a, arg, NULL);
@@ -766,14 +774,14 @@ static const char *short_path(const char *p) {
 }
 
 static Clay_ElementDeclaration step_decl(void) {
-    return (Clay_ElementDeclaration){.layout = {.childGap = 10, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {0, 0, 3, 3},
+    return (Clay_ElementDeclaration){.layout = {.childGap = PX(10), .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {PX(0), PX(0), PX(3), PX(3)},
                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}};
 }
 
 /* The mark and the text of a step row; the caller adds its buttons after. */
 static void step_head(int num, const char *title, StepMark mark, int is_next, const char *detail) {
     Clay_Color mc = mark == S_DONE ? C_GREEN : is_next ? C_ACCENT : C_QUIET;
-    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(26)}}}) {
+    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(PXF(26))}}}) {
         CLAY_TEXT(mark == S_DONE ? cs("OK") : num ? csf("%d", num) : cs("-"), T(14, mc));
     }
     /* No clip here: Clay 0.14 keeps at most 10 clipping containers per layout. */
@@ -897,7 +905,7 @@ static void ai_card(void) {
         CLAY_TEXT(cs(app.ai_cmd[0] ? "The AI buttons pipe their prompt into this command, run in the project folder:"
                                    : "No command set: the AI buttons copy the prompt for you to paste. Or set a command the prompt is piped into:"),
                   T(13, C_QUIET));
-        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 8, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
             text_field(3, app.ai_in, "e.g. claude -p --permission-mode acceptEdits ...", 0);
             button("Save", A_AI_SAVE, 0, strcmp(app.ai_in, app.ai_cmd) != 0, strcmp(app.ai_in, app.ai_cmd) != 0);
         }
@@ -945,8 +953,8 @@ static void gate_body(void) {
     for (int i = 0; i < g->n_checks; i++) {
         const GateCheck *c = &g->checks[i];
         int pass = !strcmp(c->status, "pass"), fail = !strcmp(c->status, "fail");
-        CLAY({.layout = {.childGap = 10, .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
-            CLAY({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(44)}}}) {
+        CLAY({.layout = {.childGap = PX(10), .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
+            CLAY({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(PXF(44))}}}) {
                 CLAY_TEXT(cs(pass ? "PASS" : fail ? "FAIL" : "skip"), T(14, pass ? C_GREEN : fail ? C_RED : C_QUIET));
             }
             CLAY_TEXT(csf("%2d  %s", i + 1, c->name), T(14, fail ? C_RED : C_INK));
@@ -966,16 +974,16 @@ static void sim_body(void) {
     const State *s = &app.model.states[app.cur];
     CLAY_TEXT(csf("Active: %s", s->name), T(20, C_ACCENT));
     CLAY_TEXT(cs(s->id), T(13, C_QUIET));
-    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = 6, .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = PX(6), .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
         for (int i = 0; i < app.model.events.n && i < 64; i++) {
             const char *ev = app.model.events.v[i];
             const char *target = state_target(s, ev);
             const State *t = target ? model_state(&app.model, target) : NULL;
             Clay_ElementId id = CLAY_IDI("Event", i);
             CLAY({.id = id,
-                  .layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {10, 10, 6, 6}, .childGap = 8},
+                  .layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {PX(10), PX(10), PX(6), PX(6)}, .childGap = PX(8)},
                   .backgroundColor = target ? (Clay_Hovered() ? C_BTN_HOVER : C_BTN) : C_BTN_OFF,
-                  .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+                  .cornerRadius = CLAY_CORNER_RADIUS(PX(6))}) {
                 CLAY_TEXT(cs(ev), T(15, target ? C_INK : C_QUIET));
                 CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
                 CLAY_TEXT(t ? csf("-> %s", t->name) : cs("ignored"), T(14, target ? C_ACCENT : C_QUIET));
@@ -983,8 +991,8 @@ static void sim_body(void) {
             button_reg(id, A_EVENT, i, NULL);
         }
         Clay_ElementId rid = CLAY_ID("Reset");
-        CLAY({.id = rid, .layout = {.padding = {10, 10, 6, 6}},
-              .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_BTN_OFF, .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+        CLAY({.id = rid, .layout = {.padding = {PX(10), PX(10), PX(6), PX(6)}},
+              .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_BTN_OFF, .cornerRadius = CLAY_CORNER_RADIUS(PX(6))}) {
             CLAY_TEXT(cs("Reset to initial state"), T(14, C_INK));
         }
         button_reg(rid, A_RESET, 0, NULL);
@@ -1021,7 +1029,7 @@ static void errors_card(void) {
 }
 
 static void header_row(void) {
-    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 8, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
         CLAY_TEXT(cs("stategate"), T(22, C_INK));
         CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
         button("Projects", A_HOME, 0, !app.job.running, 0);
@@ -1035,11 +1043,11 @@ static void modal_body(void) {
     const Job *j = &app.job;
     Question q = job_question();
     CLAY_TEXT(csf("$ %s", j->title), T(15, C_QUIET));
-    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(12)},
-          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(PX(12))},
+          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(PX(6))}) {
         CLAY_TEXT(tail_lines(&j->out, app.modal_from, 40), T(15, C_INK));
     }
-    CLAY({.layout = {.childGap = 10}}) {
+    CLAY({.layout = {.childGap = PX(10)}}) {
         if (q == Q_SIGNOFF) {
             button("Sign off", A_MODAL_SEND, 1, 1, 1);
             button("Cancel", A_MODAL_SEND, 0, 1, 0);
@@ -1064,8 +1072,8 @@ static void modal_layer(void) {
                      .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}},
           .backgroundColor = {20, 20, 25, 120},
           .floating = {.attachTo = CLAY_ATTACH_TO_ROOT, .zIndex = 10}}) {
-        CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_FIXED(760)}, .padding = CLAY_PADDING_ALL(20), .childGap = 12},
-              .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(10), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
+        CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_FIXED(fminf(PXF(760), GetScreenWidth() * 0.9f))}, .padding = CLAY_PADDING_ALL(PX(20)), .childGap = PX(12)},
+              .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(PX(10)), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
             modal_body();
         }
     }
@@ -1076,7 +1084,7 @@ static Clay_RenderCommandArray build_project(void) {
     CLAY({.id = CLAY_ID("Root"), .layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}}}) {
         CLAY({.id = CLAY_ID("CanvasSpace"), .layout = {.sizing = {.width = CLAY_SIZING_PERCENT(2.0f / 3.0f), .height = CLAY_SIZING_GROW(0)}}}) {}
         CLAY({.id = CLAY_ID("Panel"),
-              .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_PERCENT(1.0f / 3.0f), CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(14), .childGap = 12},
+              .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_PERCENT(1.0f / 3.0f), CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(PX(14)), .childGap = PX(12)},
               .backgroundColor = C_PANEL,
               .border = {.color = C_RULE, .width = {.left = 1}},
               .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
@@ -1191,8 +1199,8 @@ static void text_field(int which, char *buf, const char *placeholder, float widt
     Clay_ElementId id = CLAY_IDI("Field", which);
     int focused = app.focus == which;
     CLAY({.id = id,
-          .layout = {.sizing = {.width = width > 0 ? CLAY_SIZING_FIXED(width) : CLAY_SIZING_GROW(0)}, .padding = {10, 10, 7, 7}},
-          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(6), .clip = {.horizontal = true},
+          .layout = {.sizing = {.width = width > 0 ? CLAY_SIZING_FIXED(PXF(width)) : CLAY_SIZING_GROW(0)}, .padding = {PX(10), PX(10), PX(7), PX(7)}},
+          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(PX(6)), .clip = {.horizontal = true},
           .border = {.color = focused ? C_ACCENT : C_RULE, .width = {1, 1, 1, 1, 0}}}) {
         /* While typing, show the end of a long value: the field cannot scroll. */
         size_t keep = which == 3 ? 46 : 90, len = strlen(buf);
@@ -1205,25 +1213,25 @@ static void text_field(int which, char *buf, const char *placeholder, float widt
 
 static void home_open_body(void) {
     heading("OPEN OR CREATE A PROJECT FOLDER");
-    CLAY({.layout = {.childGap = 8, .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
+    CLAY({.layout = {.childGap = PX(8), .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
         text_field(1, app.path_in, "/path/to/folder", 0);
         button("Go", A_GO_PATH, 0, 1, 0);
         button("Up", A_BROWSE_UP, 0, 1, 0);
     }
-    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(420)}, .padding = CLAY_PADDING_ALL(6), .childGap = 2},
-          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(6), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(PXF(420))}, .padding = CLAY_PADDING_ALL(PX(6)), .childGap = PX(2)},
+          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(PX(6)), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
           .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
         if (!app.dirs.n) CLAY_TEXT(cs("(no folders here)"), T(14, C_QUIET));
         for (int i = 0; i < app.dirs.n && i < 400; i++) {
             Clay_ElementId id = CLAY_IDI("Dir", i);
-            CLAY({.id = id, .layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {8, 8, 4, 4}},
-                  .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(4)}) {
+            CLAY({.id = id, .layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {PX(8), PX(8), PX(4), PX(4)}},
+                  .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(PX(4))}) {
                 CLAY_TEXT(csf("%s/", app.dirs.v[i]), T(15, C_INK));
             }
             button_reg(id, A_BROWSE_INTO, i, NULL);
         }
     }
-    CLAY({.layout = {.childGap = 8, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+    CLAY({.layout = {.childGap = PX(8), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
         button("Open this folder", A_OPEN_BROWSE, 0, 1, 1);
         CLAY_TEXT(cs("or new folder here:"), T(14, C_QUIET));
         text_field(2, app.name_in, "folder name", 220);
@@ -1238,8 +1246,8 @@ static void home_recent_body(void) {
     for (int i = 0; i < app.recent.n; i++) {
         Clay_ElementId id = CLAY_IDI("Recent", i);
         const char *slash = strrchr(app.recent.v[i], '/');
-        CLAY({.id = id, .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {10, 10, 6, 6}},
-              .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_BTN, .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
+        CLAY({.id = id, .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {PX(10), PX(10), PX(6), PX(6)}},
+              .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_BTN, .cornerRadius = CLAY_CORNER_RADIUS(PX(6))}) {
             CLAY_TEXT(cs(slash ? slash + 1 : app.recent.v[i]), T(16, C_INK));
             CLAY_TEXT(cs(short_path(app.recent.v[i])), T(12, C_QUIET));
         }
@@ -1249,7 +1257,7 @@ static void home_recent_body(void) {
 
 static Clay_RenderCommandArray build_home(void) {
     Clay_BeginLayout();
-    CLAY({.id = CLAY_ID("Home"), .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}, .padding = {60, 60, 40, 40}, .childGap = 20},
+    CLAY({.id = CLAY_ID("Home"), .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}, .padding = {PX(60), PX(60), PX(40), PX(40)}, .childGap = PX(20)},
           .backgroundColor = {244, 244, 241, 255}}) {
         CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
             CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM}}) {
@@ -1259,13 +1267,13 @@ static Clay_RenderCommandArray build_home(void) {
             CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
             button("Quit", A_QUIT, 0, 1, 0);
         }
-        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = 20}}) {
-            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_PERCENT(0.62f)}, .padding = CLAY_PADDING_ALL(16), .childGap = 10},
-                  .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(8), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
+        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(20)}}) {
+            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_PERCENT(0.62f)}, .padding = CLAY_PADDING_ALL(PX(16)), .childGap = PX(10)},
+                  .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(PX(8)), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
                 home_open_body();
             }
-            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(16), .childGap = 8},
-                  .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(8), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
+            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(PX(16)), .childGap = PX(8)},
+                  .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(PX(8)), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}}) {
                 home_recent_body();
             }
         }
@@ -1430,6 +1438,38 @@ static void find_cli(void) {
     snprintf(app.sg, sizeof app.sg, "stategate");
 }
 
+/* The base scale follows the window height: 1 at 760 px tall, so a
+ * maximized window on a 1080p screen is about 1.4. */
+static float ui_scale(void) {
+    float base = fminf(3.0f, fmaxf(1.0f, GetScreenHeight() / 720.0f));
+    return base * (app.ui_mult > 0 ? app.ui_mult : 1.0f);
+}
+
+static char *ui_path(void) {
+    static char p[PATH_MAX];
+    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+    if (xdg && *xdg) snprintf(p, sizeof p, "%s/stategate/text_size", xdg);
+    else snprintf(p, sizeof p, "%s/.config/stategate/text_size", home ? home : ".");
+    return p;
+}
+
+static float ui_mult_load(void) {
+    char *t = read_file(ui_path(), NULL);
+    float m = t ? strtof(t, NULL) : 1.0f;
+    free(t);
+    return m >= 0.5f && m <= 2.5f ? m : 1.0f;
+}
+
+static void ui_mult_save(float m) {
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof dir, "%s", ui_path());
+    *strrchr(dir, '/') = 0;
+    mkdirs(dir);
+    char buf[32];
+    int n = snprintf(buf, sizeof buf, "%.3f\n", m);
+    write_file(ui_path(), buf, (size_t)n);
+}
+
 int main(int argc, char **argv) {
     const char *dir = NULL, *shot = NULL, *sends = NULL;
     int windowed = 0;
@@ -1452,7 +1492,18 @@ int main(int argc, char **argv) {
     Clay_Raylib_Initialize(1440, 900, "stategate", FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | (shot ? FLAG_WINDOW_HIDDEN : 0));
     SetTargetFPS(60);
     SetExitKey(KEY_NULL); /* Esc closes dialogs, not the app */
-    if (!shot && !windowed) ToggleBorderlessWindowed();
+    if (!shot && !windowed) {
+        /* Maximized, with the title bar: most of the screen, still a window. */
+        int mon = GetCurrentMonitor();
+        int mw = GetMonitorWidth(mon), mh = GetMonitorHeight(mon);
+        if (mw > 0 && mh > 0) {
+            SetWindowSize(mw * 9 / 10, mh * 9 / 10);
+            SetWindowPosition(mw / 20, mh / 20);
+        }
+        MaximizeWindow();
+    }
+    app.ui_mult = ui_mult_load();
+    app.ui = ui_scale();
     uint64_t mem = Clay_MinMemorySize();
     Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(mem, malloc(mem)),
                     (Clay_Dimensions){(float)GetScreenWidth(), (float)GetScreenHeight()}, (Clay_ErrorHandler){clay_error, 0});
@@ -1463,7 +1514,7 @@ int main(int argc, char **argv) {
 #ifdef SG_SOURCE_RESOURCE_DIR
     if (!FileExists(font_path)) snprintf(font_path, sizeof font_path, "%s/Roboto-Regular.ttf", SG_SOURCE_RESOURCE_DIR);
 #endif
-    fonts[0] = FileExists(font_path) ? LoadFontEx(font_path, 48, 0, 0) : GetFontDefault();
+    fonts[0] = FileExists(font_path) ? LoadFontEx(font_path, 64, 0, 0) : GetFontDefault();
     SetTextureFilter(fonts[0].texture, TEXTURE_FILTER_BILINEAR);
     app.font = fonts[0];
     Clay_SetMeasureTextFunction(Raylib_MeasureText, fonts);
@@ -1481,6 +1532,19 @@ int main(int argc, char **argv) {
     int frames = 0;
     while (!WindowShouldClose() && !quit_requested) {
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
+        {
+            /* Ctrl +, Ctrl - and Ctrl 0 size the text, as in a browser. */
+            int ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+            float m = app.ui_mult;
+            if (ctrl && (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD))) m *= 1.1f;
+            if (ctrl && (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT))) m /= 1.1f;
+            if (ctrl && (IsKeyPressed(KEY_ZERO) || IsKeyPressed(KEY_KP_0))) m = 1.0f;
+            m = fminf(2.5f, fmaxf(0.5f, m));
+            if (m != app.ui_mult) { app.ui_mult = m; ui_mult_save(m); }
+            float prev = app.ui;
+            app.ui = ui_scale();
+            if (prev > 0 && fabsf(prev - app.ui) > 0.001f && app.screen == SCREEN_PROJECT) fit_view();
+        }
         if (app.screen == SCREEN_PROJECT) {
             if (GetTime() - last_poll > 0.5) { poll_files(); last_poll = GetTime(); }
             if (job_poll(&app.job) && !app.job.running) {
