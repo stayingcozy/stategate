@@ -34,6 +34,7 @@
 #endif
 
 #define NODE_W 170.0f
+#define MAX_GRID 256
 #define FONT_BODY 0
 
 /* ---- palette ---- */
@@ -114,6 +115,15 @@ typedef struct {
     Vector2 pan;
     float zoom;
     Font font;
+    int fit_pending; /* fit the view once the grid has been laid out */
+
+    /* The canvas grid: the saved layout only orders the states into rows
+     * and columns; Clay sizes the cells and keeps the gaps at any scale. */
+    int col[MAX_GRID], row[MAX_GRID];
+    int n_cols, n_rows;
+
+    int sb_drag;      /* dragging the panel scrollbar */
+    float sb_grab;    /* where on the thumb it was grabbed */
 } App;
 
 static App app;
@@ -195,6 +205,8 @@ static void sim_send(const char *event) {
 
 static void fit_view(void);
 
+static void grid_assign(void);
+
 static void load_model(int first) {
     if (!app.model_path) return;
     SgModel m;
@@ -216,7 +228,8 @@ static void load_model(int first) {
     int idx = *keep ? state_index(&app.model, keep) : -1;
     if (idx < 0) sim_reset();
     else { app.cur = idx; app.last_from = app.last_to = -1; }
-    if (first) fit_view();
+    grid_assign();
+    if (first) app.fit_pending = 1;
 }
 
 static void poll_files(void) {
@@ -234,18 +247,25 @@ static void poll_files(void) {
 
 /* ---- canvas ---- */
 
-static float canvas_width(void) { return floorf(GetScreenWidth() * 2.0f / 3.0f); }
+/* The panel takes a third of the window, or more when the text is large
+ * enough that a third would crowd it, up to just over half. */
+static float panel_width(void) {
+    float w = (float)GetScreenWidth();
+    return floorf(fminf(w * 0.55f, fmaxf(w / 3.0f, 430.0f * app.ui)));
+}
+
+static float canvas_width(void) { return (float)GetScreenWidth() - panel_width(); }
 
 static float node_height(const State *s) {
     int lines = 1 + (s->entry.n ? 1 : 0) + (s->exit.n ? 1 : 0) + (s->invoke.n ? 1 : 0) + (s->has_after ? 1 : 0);
-    return (22.0f + lines * 18.0f) * app.ui;
+    return (24.0f + lines * 20.0f) * app.ui;
 }
 
 static Vector2 text_size(const char *s, float size);
 
 /* Width in world units: the widest line at zoom 1, plus padding. */
 static float node_width(const State *s) {
-    float w = text_size(s->name, 18.0f * app.ui).x;
+    float w = text_size(s->name, 20.0f * app.ui).x;
     char line[256];
     const StrList *lists[3] = {&s->entry, &s->exit, &s->invoke};
     const char *prefix[3] = {"entry: ", "exit: ", "invoke: "};
@@ -256,40 +276,78 @@ static float node_width(const State *s) {
             strncat(line, i ? ", " : "", sizeof line - strlen(line) - 1);
             strncat(line, lists[k]->v[i], sizeof line - strlen(line) - 1);
         }
-        w = fmaxf(w, text_size(line, 13.5f * app.ui).x);
+        w = fmaxf(w, text_size(line, 15.0f * app.ui).x);
     }
     if (s->has_after) {
         snprintf(line, sizeof line, "after %ld ms: %s", s->after_ms, s->after_event);
-        w = fmaxf(w, text_size(line, 13.5f * app.ui).x);
+        w = fmaxf(w, text_size(line, 15.0f * app.ui).x);
     }
     return fmaxf(NODE_W * app.ui, w + 26.0f * app.ui);
 }
 
-static Vector2 world_to_screen(Vector2 w) {
-    return (Vector2){w.x * app.zoom + app.pan.x, w.y * app.zoom + app.pan.y};
+/* Clusters sorted values: a gap wider than `gap` starts a new cluster. */
+static int cluster_of(const double *sorted, int n, double v, double gap) {
+    int c = 0;
+    for (int i = 1; i < n && sorted[i] <= v + 1e-9; i++)
+        if (sorted[i] - sorted[i - 1] > gap) c++;
+    return c;
 }
 
-static Rectangle node_rect(const State *s) {
-    Vector2 p = world_to_screen((Vector2){(float)s->x, (float)s->y});
-    return (Rectangle){p.x, p.y, node_width(s) * app.zoom, node_height(s) * app.zoom};
+static int cmp_double(const void *a, const void *b) {
+    double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : x > y;
 }
 
-static void fit_view(void) {
-    if (!app.have_model || !app.model.n_states) return;
-    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
-    for (int i = 0; i < app.model.n_states; i++) {
-        const State *s = &app.model.states[i];
-        minx = fminf(minx, (float)s->x);
-        miny = fminf(miny, (float)s->y);
-        maxx = fmaxf(maxx, (float)s->x + node_width(s));
-        maxy = fmaxf(maxy, (float)s->y + node_height(s));
+/* The saved layout's x and y pick each state's column and row: states a
+ * little apart share one. Two states that land in one cell get a column
+ * each, so no two nodes can ever overlap. */
+static void grid_assign(void) {
+    const SgModel *m = &app.model;
+    int n = m->n_states < MAX_GRID ? m->n_states : MAX_GRID;
+    static double xs[MAX_GRID], ys[MAX_GRID];
+    for (int i = 0; i < n; i++) { xs[i] = m->states[i].x; ys[i] = m->states[i].y; }
+    qsort(xs, (size_t)n, sizeof xs[0], cmp_double);
+    qsort(ys, (size_t)n, sizeof ys[0], cmp_double);
+    app.n_cols = app.n_rows = 0;
+    for (int i = 0; i < n; i++) {
+        app.col[i] = cluster_of(xs, n, m->states[i].x, 100.0);
+        app.row[i] = cluster_of(ys, n, m->states[i].y, 60.0);
     }
-    float cw = canvas_width(), ch = (float)GetScreenHeight();
-    float margin = 60.0f;
-    float zx = (cw - 2 * margin) / fmaxf(1.0f, maxx - minx), zy = (ch - 2 * margin) / fmaxf(1.0f, maxy - miny);
-    app.zoom = fminf(2.0f, fmaxf(0.3f, fminf(zx, zy)));
-    app.pan.x = (cw - (maxx - minx) * app.zoom) / 2 - minx * app.zoom;
-    app.pan.y = (ch - (maxy - miny) * app.zoom) / 2 - miny * app.zoom;
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < i; j++) {
+            if (app.col[j] != app.col[i] || app.row[j] != app.row[i]) continue;
+            int c = app.col[i];
+            for (int k = 0; k < n; k++) if (app.col[k] > c) app.col[k]++;
+            app.col[i] = c + 1;
+            j = -1; /* check the new cell again */
+        }
+    for (int i = 0; i < n; i++) {
+        if (app.col[i] + 1 > app.n_cols) app.n_cols = app.col[i] + 1;
+        if (app.row[i] + 1 > app.n_rows) app.n_rows = app.row[i] + 1;
+    }
+}
+
+/* Where Clay put the node this frame, in screen pixels. */
+static Rectangle node_rect(const State *s) {
+    int i = (int)(s - app.model.states);
+    Clay_ElementData d = Clay_GetElementData(CLAY_IDI("Node", i));
+    if (!d.found) return (Rectangle){-1e5f, -1e5f, 0, 0};
+    return (Rectangle){d.boundingBox.x, d.boundingBox.y, d.boundingBox.width, d.boundingBox.height};
+}
+
+/* Fit the grid Clay laid out (at the current zoom) into the canvas. */
+static void fit_view(void) {
+    Clay_ElementData g = Clay_GetElementData(CLAY_ID("Grid"));
+    if (!app.have_model || !g.found || app.zoom <= 0) return;
+    float w = g.boundingBox.width / app.zoom, h = g.boundingBox.height / app.zoom;
+    float cw = canvas_width(), ch = (float)GetScreenHeight(), margin = 30.0f * app.ui;
+    float zx = (cw - 2 * margin) / fmaxf(1.0f, w), zy = (ch - 2 * margin) / fmaxf(1.0f, h);
+    /* Never shrink below readable text: a big machine in a small canvas
+     * then overflows, and drag or scroll shows the rest. */
+    app.zoom = fminf(2.0f, fmaxf(0.7f, fminf(zx, zy)));
+    app.pan.x = fmaxf(0, (cw - w * app.zoom) / 2);
+    app.pan.y = (ch - h * app.zoom) / 2;
+    app.pan.y = fmaxf(0, app.pan.y);
 }
 
 static void text(const char *s, float x, float y, float size, Color c) {
@@ -338,7 +396,7 @@ static void edge_label(const char *label, Vector2 at, int hot) {
 }
 
 static void draw_label(const char *label, Vector2 at, int hot) {
-    float fs = 14.0f * app.ui * app.zoom;
+    float fs = 15.0f * app.ui * app.zoom;
     if (fs < 8) return;
     Vector2 sz = text_size(label, fs);
     Rectangle bg = {at.x - sz.x / 2 - 4, at.y - sz.y / 2 - 2, sz.x + 8, sz.y + 4};
@@ -389,7 +447,11 @@ static void draw_edges(void) {
             q = Vector2Add(q, Vector2Scale(n, off));
             DrawLineEx(p, q, thick, c);
             arrow_head(q, p, c);
-            Vector2 mid = Vector2Add(Vector2Lerp(p, q, 0.5f), Vector2Scale(n, reverse ? 14.0f * app.zoom : 0));
+            /* Each label of a two-way pair sits on its own edge's side, far
+             * enough out that the two never overlap. */
+            Vector2 ls = text_size(label, 15.0f * app.ui * app.zoom);
+            float out = fabsf(n.x) * (ls.x / 2 + 8) + fabsf(n.y) * (ls.y / 2 + 4);
+            Vector2 mid = Vector2Add(Vector2Lerp(p, q, 0.5f), Vector2Scale(n, reverse ? out : 0));
             edge_label(label, mid, hot);
         }
     }
@@ -410,7 +472,7 @@ static void draw_list_line(const char *prefix, const StrList *l, float x, float 
         if (action_locked(l->v[k])) locked = 1;
     }
     text(line, x, *y, fs, locked ? LOCKED : QUIET);
-    *y += 18.0f * app.ui * app.zoom;
+    *y += 20.0f * app.ui * app.zoom;
 }
 
 static void draw_nodes(void) {
@@ -427,11 +489,11 @@ static void draw_nodes(void) {
             DrawLineEx(dot, (Vector2){r.x, dot.y}, 1.4f * fmaxf(0.7f, app.zoom), INK);
             arrow_head((Vector2){r.x, dot.y}, dot, INK);
         }
-        float u = app.ui * app.zoom, fs = 18.0f * u, small = 13.5f * u;
+        float u = app.ui * app.zoom, fs = 20.0f * u, small = 15.0f * u;
         if (fs < 6) continue;
         float x = r.x + 12 * u, y = r.y + 10 * u;
         text(s->name, x, y, fs, active ? ACCENT : INK);
-        y += 26.0f * u;
+        y += 28.0f * u;
         if (small < 7) continue;
         if (s->entry.n) draw_list_line("entry: ", &s->entry, x, &y, small);
         if (s->exit.n) draw_list_line("exit: ", &s->exit, x, &y, small);
@@ -496,7 +558,7 @@ static void handle_canvas_input(void) {
         app.pan.x = mouse.x - (mouse.x - app.pan.x) * (app.zoom / old);
         app.pan.y = mouse.y - (mouse.y - app.pan.y) * (app.zoom / old);
     }
-    if (IsKeyPressed(KEY_F) && !app.focus) fit_view();
+    if (IsKeyPressed(KEY_F) && !app.focus) app.fit_pending = 1;
 }
 
 
@@ -767,8 +829,10 @@ static const char *short_path(const char *p) {
     char tmp[PATH_MAX];
     if (home && *home && !strncmp(p, home, strlen(home))) snprintf(tmp, sizeof tmp, "~%s", p + strlen(home));
     else snprintf(tmp, sizeof tmp, "%s", p);
-    size_t n = strlen(tmp);
-    if (n > 52) snprintf(o, 256, "...%s", tmp + n - 49);
+    /* As many characters as fit beside a step's button at this text size. */
+    size_t n = strlen(tmp), max = (size_t)fmaxf(20, (panel_width() - PXF(190)) / PXF(7));
+    if (max > 200) max = 200;
+    if (n > max) snprintf(o, 256, "...%s", tmp + n - (max - 3));
     else snprintf(o, 256, "%s", tmp);
     return o;
 }
@@ -1079,12 +1143,70 @@ static void modal_layer(void) {
     }
 }
 
+/* The machine's nodes as a Clay grid: columns of cells, every cell in a row
+ * as tall as the row's tallest node and every cell in a column as wide as
+ * its widest, with fixed gaps between. Clay only places the boxes; the
+ * canvas draws them, at the positions Clay computed, under the edges. */
+static void canvas_grid(void) {
+    if (!app.have_model) return;
+    const SgModel *m = &app.model;
+    int n = m->n_states < MAX_GRID ? m->n_states : MAX_GRID;
+    static float colw[MAX_GRID], rowh[MAX_GRID];
+    for (int c = 0; c < app.n_cols; c++) colw[c] = 0;
+    for (int r = 0; r < app.n_rows; r++) rowh[r] = 0;
+    for (int i = 0; i < n; i++) {
+        colw[app.col[i]] = fmaxf(colw[app.col[i]], node_width(&m->states[i]));
+        rowh[app.row[i]] = fmaxf(rowh[app.row[i]], node_height(&m->states[i]));
+    }
+    float z = app.zoom * app.ui;
+    /* Room between nodes for edge labels, above for self-loops, and on the
+     * left for the initial-state dot. A label on an edge between two nodes
+     * of one row must fit in the gap between them. */
+    float need = 100 * app.ui;
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < n; j++) {
+            if (i == j || app.row[i] != app.row[j]) continue;
+            char label[256] = "";
+            const State *a = &m->states[i];
+            for (int k = 0; k < a->n_on; k++) {
+                if (strcmp(a->on[k].target, m->states[j].id)) continue;
+                if (*label) strncat(label, ", ", sizeof label - strlen(label) - 1);
+                strncat(label, a->on[k].event, sizeof label - strlen(label) - 1);
+            }
+            if (*label) need = fmaxf(need, text_size(label, 15.0f * app.ui).x + 40 * app.ui);
+        }
+    uint16_t colgap = (uint16_t)(need * app.zoom), rowgap = (uint16_t)(90 * z);
+    CLAY({.id = CLAY_ID("Grid"),
+          .layout = {.layoutDirection = CLAY_LEFT_TO_RIGHT, .childGap = colgap,
+                     .padding = {(uint16_t)(44 * z), (uint16_t)(16 * z), (uint16_t)(70 * z), (uint16_t)(30 * z)}},
+          .floating = {.attachTo = CLAY_ATTACH_TO_PARENT, .offset = {app.pan.x, app.pan.y},
+                       .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH}}) {
+        for (int c = 0; c < app.n_cols; c++) {
+            CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = rowgap}}) {
+                for (int r = 0; r < app.n_rows; r++) {
+                    CLAY({.layout = {.sizing = {CLAY_SIZING_FIXED(colw[c] * app.zoom), CLAY_SIZING_FIXED(rowh[r] * app.zoom)},
+                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}}}) {
+                        for (int i = 0; i < n; i++) {
+                            if (app.col[i] != c || app.row[i] != r) continue;
+                            const State *st = &m->states[i];
+                            CLAY({.id = CLAY_IDI("Node", i),
+                                  .layout = {.sizing = {CLAY_SIZING_FIXED(node_width(st) * app.zoom), CLAY_SIZING_FIXED(node_height(st) * app.zoom)}}}) {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 static Clay_RenderCommandArray build_project(void) {
     Clay_BeginLayout();
     CLAY({.id = CLAY_ID("Root"), .layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}}}) {
-        CLAY({.id = CLAY_ID("CanvasSpace"), .layout = {.sizing = {.width = CLAY_SIZING_PERCENT(2.0f / 3.0f), .height = CLAY_SIZING_GROW(0)}}}) {}
+        CLAY({.id = CLAY_ID("CanvasSpace"), .layout = {.sizing = {.width = CLAY_SIZING_FIXED(canvas_width()), .height = CLAY_SIZING_GROW(0)}}}) {
+            canvas_grid();
+        }
         CLAY({.id = CLAY_ID("Panel"),
-              .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_PERCENT(1.0f / 3.0f), CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(PX(14)), .childGap = PX(12)},
+              .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_FIXED(panel_width()), CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(PX(14)), .childGap = PX(12)},
               .backgroundColor = C_PANEL,
               .border = {.color = C_RULE, .width = {.left = 1}},
               .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
@@ -1218,7 +1340,7 @@ static void home_open_body(void) {
         button("Go", A_GO_PATH, 0, 1, 0);
         button("Up", A_BROWSE_UP, 0, 1, 0);
     }
-    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(PXF(420))}, .padding = CLAY_PADDING_ALL(PX(6)), .childGap = PX(2)},
+    CLAY({.id = CLAY_ID("Dirs"), .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(PXF(420))}, .padding = CLAY_PADDING_ALL(PX(6)), .childGap = PX(2)},
           .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(PX(6)), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
           .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}}) {
         if (!app.dirs.n) CLAY_TEXT(cs("(no folders here)"), T(14, C_QUIET));
@@ -1438,6 +1560,66 @@ static void find_cli(void) {
     snprintf(app.sg, sizeof app.sg, "stategate");
 }
 
+/* Scrolls a Clay scroll container by dy pixels, kept inside its content. */
+static void scroll_by(Clay_ElementId id, float dy) {
+    Clay_ScrollContainerData sc = Clay_GetScrollContainerData(id);
+    if (!sc.found) return;
+    float min = fminf(0, -(sc.contentDimensions.height - sc.scrollContainerDimensions.height));
+    sc.scrollPosition->y = fminf(0, fmaxf(min, sc.scrollPosition->y + dy));
+}
+
+/* The panel's scrollbar thumb, in screen pixels; height 0 when it all fits. */
+static Rectangle scroll_thumb(Clay_ElementId id) {
+    Clay_ScrollContainerData sc = Clay_GetScrollContainerData(id);
+    Clay_ElementData el = Clay_GetElementData(id);
+    if (!sc.found || !el.found || sc.contentDimensions.height <= sc.scrollContainerDimensions.height + 1) return (Rectangle){0};
+    Clay_BoundingBox b = el.boundingBox;
+    float view = sc.scrollContainerDimensions.height, content = sc.contentDimensions.height;
+    float h = fmaxf(PXF(30), b.height * view / content);
+    float t = -sc.scrollPosition->y / (content - view);
+    return (Rectangle){b.x + b.width - PXF(8), b.y + (b.height - h) * t, PXF(6), h};
+}
+
+static void draw_scrollbar(Clay_ElementId id) {
+    Rectangle r = scroll_thumb(id);
+    if (r.height <= 0) return;
+    DrawRectangleRounded(r, 1.0f, 6, app.sb_drag ? (Color){120, 120, 120, 220} : (Color){160, 160, 160, 160});
+}
+
+static void handle_scroll(Vector2 mouse) {
+    Clay_ElementId id = app.screen == SCREEN_HOME ? CLAY_ID("Dirs") : CLAY_ID("Panel");
+    if (app.screen == SCREEN_PROJECT && app.modal) return;
+    /* Drag the thumb, or click the track to jump there. */
+    if (app.screen == SCREEN_PROJECT) {
+        Rectangle t = scroll_thumb(id);
+        Clay_ElementData el = Clay_GetElementData(id);
+        if (t.height > 0 && el.found && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+            mouse.x >= t.x - PXF(6) && mouse.x <= t.x + t.width + PXF(4)) {
+            app.sb_drag = 1;
+            app.sb_grab = mouse.y >= t.y && mouse.y <= t.y + t.height ? mouse.y - t.y : t.height / 2;
+        }
+        if (app.sb_drag && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && t.height > 0) {
+            Clay_ScrollContainerData sc = Clay_GetScrollContainerData(id);
+            float track = el.boundingBox.height - t.height;
+            float f = track > 0 ? (mouse.y - app.sb_grab - el.boundingBox.y) / track : 0;
+            f = fminf(1, fmaxf(0, f));
+            sc.scrollPosition->y = -f * (sc.contentDimensions.height - sc.scrollContainerDimensions.height);
+        }
+        if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) app.sb_drag = 0;
+    }
+    int over = app.screen == SCREEN_HOME ? Clay_PointerOver(id) : mouse.x > canvas_width();
+    if (!over) return;
+    /* One wheel notch moves about four lines; touchpads send fractions. */
+    float dy = GetMouseWheelMoveV().y * PXF(80);
+    if (!app.focus) {
+        if (IsKeyPressed(KEY_PAGE_DOWN)) dy -= GetScreenHeight() * 0.8f;
+        if (IsKeyPressed(KEY_PAGE_UP)) dy += GetScreenHeight() * 0.8f;
+        if (IsKeyPressed(KEY_HOME)) dy += 1e6f;
+        if (IsKeyPressed(KEY_END)) dy -= 1e6f;
+    }
+    if (dy != 0) scroll_by(id, dy);
+}
+
 /* The base scale follows the window height: 1 at 760 px tall, so a
  * maximized window on a 1080p screen is about 1.4. */
 static float ui_scale(void) {
@@ -1543,7 +1725,7 @@ int main(int argc, char **argv) {
             if (m != app.ui_mult) { app.ui_mult = m; ui_mult_save(m); }
             float prev = app.ui;
             app.ui = ui_scale();
-            if (prev > 0 && fabsf(prev - app.ui) > 0.001f && app.screen == SCREEN_PROJECT) fit_view();
+            if (prev > 0 && fabsf(prev - app.ui) > 0.001f && app.screen == SCREEN_PROJECT) app.fit_pending = 1;
         }
         if (app.screen == SCREEN_PROJECT) {
             if (GetTime() - last_poll > 0.5) { poll_files(); last_poll = GetTime(); }
@@ -1563,9 +1745,10 @@ int main(int argc, char **argv) {
         Clay_SetLayoutDimensions((Clay_Dimensions){(float)GetScreenWidth(), (float)GetScreenHeight()});
         Vector2 mouse = GetMousePosition();
         Clay_SetPointerState((Clay_Vector2){mouse.x, mouse.y}, IsMouseButtonDown(MOUSE_BUTTON_LEFT));
-        int panel_scroll = app.screen == SCREEN_HOME || mouse.x > canvas_width() || app.modal;
-        Vector2 wheel = panel_scroll ? GetMouseWheelMoveV() : (Vector2){0, 0};
-        Clay_UpdateScrollContainers(true, (Clay_Vector2){wheel.x, wheel.y * 3}, GetFrameTime());
+        /* Scrolling is ours, not Clay's: Clay's wheel step is a fixed 10 px
+         * and its drag-to-scroll fights clicks. */
+        Clay_UpdateScrollContainers(false, (Clay_Vector2){0, 0}, GetFrameTime());
+        handle_scroll(mouse);
         if (app.screen == SCREEN_PROJECT && !app.modal) handle_canvas_input();
         handle_typing();
         if (app.show_output && app.screen == SCREEN_PROJECT && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
@@ -1581,12 +1764,21 @@ int main(int argc, char **argv) {
             app.show_output = 0;
         }
         Clay_RenderCommandArray cmds = app.screen == SCREEN_HOME ? build_home() : build_project();
+        if (app.fit_pending && app.screen == SCREEN_PROJECT && Clay_GetElementData(CLAY_ID("Grid")).found) {
+            /* Fit, then lay out again so this frame draws the fitted view. */
+            fit_view();
+            app.fit_pending = 0;
+            arena_used = 0;
+            n_buttons = 0;
+            cmds = build_project();
+        }
         handle_clicks();
 
         BeginDrawing();
         ClearBackground(BG);
         if (app.screen == SCREEN_PROJECT) draw_canvas();
         Clay_Raylib_Render(cmds, fonts);
+        if (app.screen == SCREEN_PROJECT) draw_scrollbar(CLAY_ID("Panel"));
         EndDrawing();
 
         if (shot && ++frames == 3) {

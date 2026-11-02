@@ -129,8 +129,10 @@ the window, and Ctrl + / Ctrl - / Ctrl 0 make text larger, smaller or default
 (saved in `~/.config/stategate/text_size`). The projects screen browses folders, opens one, creates a new folder
 under the one you are in, and lists recent projects.
 
-A project shows the machine on the left, drawn from the layout saved in the
-model, and the steps on the right. Each step's button runs the command shown
+A project shows the machine on the left and the steps on the right. The
+layout saved in the model places each state in a row and a column (states a
+little apart share one); the app then sizes the grid so nodes never overlap
+and keep room for edge labels at any text size. Each step's button runs the command shown
 under it and prints its output, so everything the app does you can also do at
 a terminal:
 
@@ -172,7 +174,8 @@ model and the gate result when either file changes.
 Below the steps: the output of the last command, the last gate result from
 `.fsm/gate.json`, a simulator and the step ladder. Click an event to fire it:
 the active state lights up and the transition it took turns blue; ignored
-events say so. Drag to pan, scroll to zoom, F to fit. The machine itself stays
+events say so. Drag to pan, scroll to zoom, F to fit. The panel scrolls with the wheel,
+its scrollbar, Page Up/Down and Home/End. The machine itself stays
 YAML you write by hand.
 
 `--send EV1,EV2` fires events at start-up and `--screenshot out.png` saves one
