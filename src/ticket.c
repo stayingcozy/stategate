@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "cJSON.h"
 #include "gate.h"
 #include "ydoc.h"
 
@@ -173,7 +174,8 @@ int confirm_by_typing(const char *phrase) {
 
 static int ticket_usage(void) {
     fprintf(stderr,
-            "usage: stategate ticket list\n"
+            "usage: stategate ticket list [--json]\n"
+            "       stategate ticket show <id>       (one ticket, section by section)\n"
             "       stategate ticket gen             (one draft per stub node; no AI)\n"
             "       stategate ticket fill <id> --title \"...\" --goal \"...\"   (draft becomes open)\n"
             "       stategate ticket new <id> --title \"...\" --goal \"...\" --step <step> --node <id>... --file <glob>...\n"
@@ -189,13 +191,60 @@ static int ticket_usage(void) {
     return 2;
 }
 
-static void print_ticket(const Ticket *t) {
-    printf("%s  \"%s\"\n", t->id, t->title);
-    if (t->goal && *t->goal) printf("  goal:  %s\n", t->goal);
-    printf("  step:  %s\n  nodes:", t->step);
-    for (int i = 0; i < t->nodes.n; i++) printf(" %s", t->nodes.v[i]);
-    printf("\n  files the agent may change:\n");
-    for (int i = 0; i < t->files.n; i++) printf("    %s\n", t->files.v[i]);
+/* Who writes each part of a ticket: `ticket gen` fills in the step, nodes and
+ * files from the model; the title and goal are the ticket writer's (your AI). */
+static void show_section(const char *name, const char *who, const char *value) {
+    printf("%s  (%s)\n  %s\n\n", name, who, value && *value ? value : "(not written yet)");
+}
+
+static void show_list(const char *name, const char *who, const StrList *l) {
+    printf("%s  (%s)\n", name, who);
+    if (!l->n) printf("  (none)\n");
+    for (int i = 0; i < l->n; i++) printf("  %s\n", l->v[i]);
+    printf("\n");
+}
+
+/* ticket show <id>: the same sections the app's ticket card shows. */
+static void show_ticket(const Ticket *t) {
+    printf("%s  %s\n\n", t->id, t->status);
+    show_section("TITLE", "written by your AI", t->title);
+    show_section("GOAL", "written by your AI", t->goal);
+    show_section("STEP", "from the model", t->step);
+    show_list("NODES", "from the model", &t->nodes);
+    show_list("FILES THE AI MAY CHANGE", "from ticket gen", &t->files);
+    if (t->errors.n) show_list("LAST RED GATE RUN", "from stategate gate", &t->errors);
+    printf("failed gate runs: %d of %d\n", t->failures, MAX_FAILURES);
+}
+
+static cJSON *json_list(const StrList *l) {
+    cJSON *a = cJSON_CreateArray();
+    for (int i = 0; i < l->n; i++) cJSON_AddItemToArray(a, cJSON_CreateString(l->v[i]));
+    return a;
+}
+
+/* ticket list --json: every ticket, every field. The app reads this. */
+static void list_json(const Tickets *ts) {
+    cJSON *root = cJSON_CreateObject(), *arr = cJSON_AddArrayToObject(root, "tickets");
+    for (int i = 0; i < ts->n; i++) {
+        const Ticket *t = &ts->v[i];
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "id", t->id);
+        cJSON_AddStringToObject(o, "status", t->status);
+        cJSON_AddStringToObject(o, "title", t->title);
+        cJSON_AddStringToObject(o, "goal", t->goal);
+        cJSON_AddStringToObject(o, "step", t->step);
+        cJSON_AddItemToObject(o, "nodes", json_list(&t->nodes));
+        cJSON_AddItemToObject(o, "files", json_list(&t->files));
+        cJSON_AddItemToObject(o, "errors", json_list(&t->errors));
+        cJSON_AddNumberToObject(o, "failures", t->failures);
+        cJSON_AddNumberToObject(o, "max_failures", MAX_FAILURES);
+        cJSON_AddStringToObject(o, "file", t->file);
+        cJSON_AddItemToArray(arr, o);
+    }
+    char *out = cJSON_Print(root);
+    printf("%s\n", out);
+    free(out);
+    cJSON_Delete(root);
 }
 
 static int need_model(const char *model_path) {
@@ -338,7 +387,7 @@ static int review_open(Tickets *ts, const char *model_path) {
         Ticket *t = &ts->v[i];
         if (strcmp(t->status, "open")) continue;
         printf("\n[%d/%d] ", ++seen, open);
-        print_ticket(t);
+        show_ticket(t);
         if (print_lint(model_path, t)) { printf("skipped: fix the problems above first\n"); continue; }
         char c = ask_review();
         if (c == 'q') break;
@@ -658,6 +707,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
     if (errors.n) return 1;
 
     const char *sub = argv[0];
+    if (!strcmp(sub, "list") && argc >= 2 && !strcmp(argv[1], "--json")) { list_json(&ts); return 0; }
     if (!strcmp(sub, "list")) {
         if (!ts.n) printf("no tickets in %s\n", TICKETS_DIR);
         for (int i = 0; i < ts.n; i++)
@@ -698,6 +748,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
     Ticket *t = ticket_find(&ts, argv[1]);
     if (!t) { fprintf(stderr, "no ticket %s\n", argv[1]); return 1; }
 
+    if (!strcmp(sub, "show")) { show_ticket(t); return 0; }
     if (!strcmp(sub, "start")) {
         Ticket *cur = ticket_current(&ts);
         if (cur && cur != t) { fprintf(stderr, "ticket %s is %s; finish or split it first\n", cur->id, cur->status); return 1; }
@@ -706,7 +757,7 @@ int cmd_ticket(int argc, char **argv, const char *model_path) {
         if (!need_model(model_path)) return 2;
         if (print_lint(model_path, t)) { fprintf(stderr, "ticket %s cannot be started; fix it first\n", t->id); return 1; }
         printf("Approve this ticket? An agent will work on it, limited to these files.\n\n");
-        print_ticket(t);
+        show_ticket(t);
         printf("\n");
         if (!confirm_by_typing("approve")) { fprintf(stderr, "not approved; %s stays open\n", t->id); return 1; }
         approve(t);
