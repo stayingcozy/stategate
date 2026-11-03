@@ -70,6 +70,16 @@ typedef struct {
     char current[64], current_status[16], gate[8];
 } Status;
 
+/* One ticket, as `stategate ticket list --json` printed it. */
+typedef struct {
+    char id[64], status[16];
+    char *title, *goal, *step;
+    StrList nodes, files, errors;
+    int failures, max_failures;
+} ViewTicket;
+
+#define MAX_TICKETS 256
+
 typedef enum { SCREEN_HOME, SCREEN_PROJECT } Screen;
 
 typedef struct {
@@ -78,7 +88,8 @@ typedef struct {
     char sg[PATH_MAX]; /* the stategate CLI the buttons run */
     Status st;
     Job job;
-    int modal;          /* a pty job (sign-off, review) is shown over the app */
+    int modal;          /* a pty job (sign-off) is shown over the app */
+    int inline_pty;     /* a pty job answered in the panel instead (ticket review) */
     size_t modal_from;  /* show output from here: the current question only */
     double status_at;
 
@@ -126,6 +137,14 @@ typedef struct {
     int step_view;    /* the step the steps card shows */
     int step_follow;  /* 1: it follows the current step */
     float sb_grab;    /* where on the thumb it was grabbed */
+
+    /* Tickets, reloaded whenever a file in .fsm/tickets changes. */
+    ViewTicket tickets[MAX_TICKETS];
+    int n_tickets;
+    long long tickets_sig;  /* changes when any ticket file does */
+    char ticket_focus[64];  /* the ticket that last changed: the card follows it */
+    int ticket_view;        /* the ticket the card shows */
+    int ticket_follow;      /* 1: it follows the focus */
 } App;
 
 static App app;
@@ -235,7 +254,12 @@ static void load_model(int first) {
     if (first) app.fit_pending = 1;
 }
 
+static void tickets_poll(void);
+static long long tickets_signature(void);
+static void tickets_reload(int follow_changes);
+
 static void poll_files(void) {
+    tickets_poll();
     if (!app.model_path) {
         /* The person is writing the model: pick it up once it appears. */
         StrList e = {0};
@@ -589,7 +613,7 @@ typedef enum {
     A_NONE, A_EVENT, A_RESET,
     A_HOME, A_INIT, A_STEP_BACK, A_STEP_FWD, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
     A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_SAVE,
-    A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP,
+    A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP, A_TICKET_PREV, A_TICKET_NEXT,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
 } UiAction;
 
@@ -610,10 +634,10 @@ static void button_reg(Clay_ElementId id, UiAction a, int arg, const char *text)
 }
 
 /* A button; disabled ones draw quiet and do nothing. */
+static int button_seq; /* ids restart with each layout */
+
 static void button(const char *label, UiAction a, int arg, int enabled, int primary) {
-    static int seq;
-    Clay_ElementId id = CLAY_IDI("Btn", seq++ % 100000);
-    if (n_buttons == 0) seq = 1; /* ids restart each frame */
+    Clay_ElementId id = CLAY_IDI("Btn", button_seq++);
     CLAY({.id = id,
           .layout = {.padding = {PX(12), PX(12), PX(6), PX(6)}},
           .backgroundColor = !enabled ? C_BTN_OFF : primary ? (Clay_Hovered() ? (Clay_Color){29, 78, 216, 255} : C_ACCENT)
@@ -636,6 +660,7 @@ static void run_cli(const char *title, int use_pty, const char *a1, const char *
         sb_printf(&app.job.out, "could not start %s\n", app.sg);
     }
     app.modal = use_pty;
+    app.inline_pty = 0;
     app.modal_from = 0;
     app.show_output = !use_pty;
     app.job_note[0] = 0;
@@ -647,6 +672,7 @@ static void run_shell(const char *title, const char *script) {
     char *argv[] = {"/bin/sh", "-c", (char *)script, NULL};
     job_start(&app.job, title, argv, 0);
     app.modal = 0;
+    app.inline_pty = 0;
     app.show_output = 1;
     app.job_note[0] = 0;
     app.copy_on_finish = 0;
@@ -815,6 +841,104 @@ static void refresh_status(void) {
     }
     app.st = st;
     app.status_at = GetTime();
+}
+
+/* ---- tickets ---- */
+
+static void sl_clear(StrList *l) {
+    for (int i = 0; i < l->n; i++) free(l->v[i]);
+    free(l->v);
+    memset(l, 0, sizeof *l);
+}
+
+static void jlist(cJSON *o, const char *k, StrList *out) {
+    cJSON *a = cJSON_GetObjectItemCaseSensitive(o, k), *e;
+    cJSON_ArrayForEach(e, a) if (cJSON_IsString(e)) sl_push(out, e->valuestring);
+}
+
+static char *jdup(cJSON *o, const char *k) {
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    return xstrdup(cJSON_IsString(v) ? v->valuestring : "");
+}
+
+/* Changes whenever a ticket file is written, added or removed. */
+static long long tickets_signature(void) {
+    DIR *d = opendir(".fsm/tickets");
+    if (!d) return 0;
+    long long sig = 1;
+    struct dirent *e;
+    char path[PATH_MAX];
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        struct stat st;
+        snprintf(path, sizeof path, ".fsm/tickets/%s", e->d_name);
+        if (stat(path, &st) == 0)
+            sig = sig * 31 + (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec + st.st_size;
+    }
+    closedir(d);
+    return sig;
+}
+
+static int ticket_index(const char *id) {
+    for (int i = 0; i < app.n_tickets; i++) if (!strcmp(app.tickets[i].id, id)) return i;
+    return -1;
+}
+
+/* Reads every ticket from `stategate ticket list --json`. The ticket that
+ * changed (your AI filled it in, you approved it) becomes the focus, so the
+ * card shows each edit as it lands. */
+static void tickets_reload(int follow_changes) {
+    char cmd[PATH_MAX + 48];
+    snprintf(cmd, sizeof cmd, "'%s' ticket list --json 2>/dev/null", app.sg);
+    int rc;
+    char *out = run_capture(cmd, &rc);
+    cJSON *o = cJSON_Parse(out);
+    free(out);
+    if (!o) return; /* a half-written file: the next change reloads */
+    char changed[64] = "";
+    static ViewTicket next[MAX_TICKETS];
+    int n = 0;
+    cJSON *t;
+    cJSON_ArrayForEach(t, cJSON_GetObjectItemCaseSensitive(o, "tickets")) {
+        if (n == MAX_TICKETS) break;
+        ViewTicket *v = &next[n++];
+        memset(v, 0, sizeof *v);
+        js(t, "id", v->id, sizeof v->id);
+        js(t, "status", v->status, sizeof v->status);
+        v->title = jdup(t, "title");
+        v->goal = jdup(t, "goal");
+        v->step = jdup(t, "step");
+        jlist(t, "nodes", &v->nodes);
+        jlist(t, "files", &v->files);
+        jlist(t, "errors", &v->errors);
+        v->failures = ji(t, "failures");
+        v->max_failures = ji(t, "max_failures");
+        int k = ticket_index(v->id);
+        const ViewTicket *old = k >= 0 ? &app.tickets[k] : NULL;
+        if (!old || strcmp(old->status, v->status) || strcmp(old->title, v->title) || strcmp(old->goal, v->goal) ||
+            v->errors.n != old->errors.n)
+            snprintf(changed, sizeof changed, "%s", v->id);
+    }
+    cJSON_Delete(o);
+    for (int i = 0; i < app.n_tickets; i++) {
+        ViewTicket *v = &app.tickets[i];
+        free(v->title); free(v->goal); free(v->step);
+        sl_clear(&v->nodes); sl_clear(&v->files); sl_clear(&v->errors);
+    }
+    memcpy(app.tickets, next, sizeof(ViewTicket) * (size_t)n);
+    app.n_tickets = n;
+    /* Opening a project just shows what is there; later changes are followed. */
+    if (follow_changes && changed[0]) {
+        snprintf(app.ticket_focus, sizeof app.ticket_focus, "%s", changed);
+        app.ticket_follow = 1;
+    }
+}
+
+static void tickets_poll(void) {
+    long long sig = tickets_signature();
+    if (sig == app.tickets_sig) return;
+    app.tickets_sig = sig;
+    tickets_reload(1);
 }
 
 /* ---- the steps card ---- */
@@ -997,7 +1121,7 @@ static void steps_card_body(void) {
             button("Draft tickets", A_TICKET_GEN, 0, !busy && s->generated && s->init, is_next && !s->t_draft);
             button(app.ai_cmd[0] ? "Fill with AI" : "Copy AI prompt", A_AI_FILL, 0, !busy && s->t_draft > 0, is_next && s->t_draft);
             break;
-        case ST_REVIEW: button("Review...", A_REVIEW, 0, !busy && s->t_open > 0 && saved, is_next); break;
+        case ST_REVIEW: button("Start review", A_REVIEW, 0, !busy && s->t_open > 0 && saved, is_next); break;
         case ST_IMPLEMENT:
             button(app.ai_cmd[0] ? "Implement with AI" : "Copy AI prompt", A_AI_IMPL, 0,
                    !busy && !strcmp(s->current_status, "active"), is_next && !strcmp(s->current_status, "active"));
@@ -1041,6 +1165,178 @@ static void steps_card(void) {
     buttons_keep_scroll = 0;
 }
 
+/* ---- the ticket card: below the steps, the ticket being written or reviewed ---- */
+
+/* The ticket `stategate ticket start` is asking about: its last "[i/n] ID"
+ * line. Returns 1 and fills id, i and n when the review is waiting. */
+static int review_asking(char id[64], int *i, int *n) {
+    if (job_question() != Q_REVIEW) return 0;
+    const SB *b = &app.job.out;
+    for (size_t k = b->len; k-- > 0;) {
+        if (b->s[k] != '[' || (k > 0 && b->s[k - 1] != '\n')) continue;
+        char tmp[64];
+        if (sscanf(b->s + k, "[%d/%d] %63s", i, n, tmp) == 3) {
+            snprintf(id, 64, "%s", tmp);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The ticket the card follows: the one under review, else the one that last
+ * changed, else the first still needing someone (draft, open, active). */
+static int ticket_focus_index(void) {
+    char id[64];
+    int qi, qn;
+    if (review_asking(id, &qi, &qn) && ticket_index(id) >= 0) return ticket_index(id);
+    if (app.ticket_focus[0] && ticket_index(app.ticket_focus) >= 0) return ticket_index(app.ticket_focus);
+    static const char *const order[] = {"draft", "open", "active", "locked", "approved"};
+    for (int k = 0; k < 5; k++)
+        for (int i = 0; i < app.n_tickets; i++) if (!strcmp(app.tickets[i].status, order[k])) return i;
+    return app.n_tickets - 1;
+}
+
+static int shown_ticket(void) {
+    if (app.ticket_follow || app.ticket_view < 0 || app.ticket_view >= app.n_tickets) {
+        app.ticket_view = ticket_focus_index();
+        app.ticket_follow = 1;
+    }
+    return app.ticket_view;
+}
+
+static void ticket_go(int delta) {
+    int v = shown_ticket() + delta;
+    if (v < 0 || v >= app.n_tickets) return;
+    app.ticket_view = v;
+    app.ticket_follow = v == ticket_focus_index();
+}
+
+static Clay_Color ticket_color(const char *status) {
+    if (!strcmp(status, "draft")) return C_AMBER;
+    if (!strcmp(status, "open")) return C_ACCENT;
+    if (!strcmp(status, "locked")) return C_RED;
+    if (!strcmp(status, "approved") || !strcmp(status, "active") || !strcmp(status, "done")) return C_GREEN;
+    return C_QUIET;
+}
+
+static const char *ticket_state_line(const ViewTicket *t) {
+    if (!strcmp(t->status, "draft")) return "DRAFT: your AI writes the title and goal";
+    if (!strcmp(t->status, "open")) return "OPEN: waiting for your review";
+    if (!strcmp(t->status, "approved")) return "APPROVED: waiting its turn for your AI";
+    if (!strcmp(t->status, "active")) return "ACTIVE: your AI is working on it";
+    if (!strcmp(t->status, "done")) return "DONE: the gate was green";
+    if (!strcmp(t->status, "locked")) return "LOCKED: too many red runs, split it";
+    if (!strcmp(t->status, "split")) return "SPLIT into smaller tickets";
+    return t->status;
+}
+
+/* One titled block of a ticket; `who` says where its words come from. */
+static void ticket_block_head(const char *name, const char *who);
+
+#define TICKET_BLOCK(name, who)                                                                                      \
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)},                  \
+                     .padding = {PX(12), PX(12), PX(8), PX(10)}, .childGap = PX(4)},                                  \
+          .backgroundColor = C_PANEL, .cornerRadius = CLAY_CORNER_RADIUS(PX(6)),                                      \
+          .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}}})                                                     \
+    for (int once_ = (ticket_block_head(name, who), 1); once_; once_ = 0)
+
+static void ticket_block_head(const char *name, const char *who) {
+    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8)}}) {
+        CLAY_TEXT(cs(name), T(12, C_QUIET));
+        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
+        CLAY_TEXT(cs(who), T(12, C_QUIET));
+    }
+}
+
+/* An AI-written field: its text, or what it is waiting on. */
+static void ai_text(const char *v, int size, int writing) {
+    if (v && *v) CLAY_TEXT(cs(v), T(size, C_INK));
+    else CLAY_TEXT(cs(writing ? "your AI is writing this..." : "not written yet"), T(14, writing ? C_ACCENT : C_AMBER));
+}
+
+static void ticket_card_body(void) {
+    int k = shown_ticket(), focus = ticket_focus_index();
+    const ViewTicket *t = &app.tickets[k];
+    char qid[64];
+    int qi = 0, qn = 0;
+    int asking = review_asking(qid, &qi, &qn) && !strcmp(qid, t->id);
+    int reviewing = app.inline_pty && app.job.running;
+    int writing = app.job.running && strstr(app.job.title, "--drafts") && !strcmp(t->status, "draft");
+
+    /* Back, which ticket, forward: like the steps above. */
+    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+        arrow("<", A_TICKET_PREV, k > 0);
+        CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(6),
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}}) {
+            if (reviewing && qn) CLAY_TEXT(csf("REVIEWING %d OF %d", qi, qn), T(13, C_ACCENT));
+            else CLAY_TEXT(csf("TICKET %d OF %d%s", k + 1, app.n_tickets, k == focus ? "" : "  (not the current one)"), T(13, C_QUIET));
+            CLAY({.layout = {.childGap = PX(5)}}) {
+                for (int i = 0; i < app.n_tickets && i < 40; i++)
+                    CLAY({.layout = {.sizing = {CLAY_SIZING_FIXED(PXF(i == k ? 18 : 8)), CLAY_SIZING_FIXED(PXF(8))}},
+                          .backgroundColor = ticket_color(app.tickets[i].status), .cornerRadius = CLAY_CORNER_RADIUS(PX(4))}) {}
+            }
+        }
+        arrow(">", A_TICKET_NEXT, k < app.n_tickets - 1);
+    }
+
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(2),
+                     .padding = {PX(4), PX(4), PX(6), PX(2)}}}) {
+        CLAY_TEXT(cs(t->id), T(20, C_INK));
+        CLAY_TEXT(cs(ticket_state_line(t)), T(13, ticket_color(t->status)));
+    }
+
+    /* The review's question, answered here: the same words typed at
+     * `stategate ticket start` in a terminal. */
+    if (asking) {
+        CLAY_TEXT(cs("Approve this ticket? Your AI will work on it, limited to the files below."), T(14, C_INK));
+        CLAY({.layout = {.childGap = PX(8), .padding = {PX(4), PX(4), PX(4), PX(4)}}}) {
+            button("Approve", A_MODAL_SEND, 2, 1, 1);
+            button("Skip", A_MODAL_SEND, 3, 1, 0);
+            button("Stop reviewing", A_MODAL_SEND, 4, 1, 0);
+        }
+    } else if (reviewing) {
+        CLAY({.layout = {.childGap = PX(8), .padding = {PX(4), PX(4), PX(4), PX(4)}, .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+            CLAY_TEXT(cs(qn ? TextFormat("Reviewing %s: use the arrows to come back to it.", qid) : "Reviewing..."), T(14, C_ACCENT));
+            button("Stop", A_MODAL_STOP, 0, 1, 0);
+        }
+    }
+
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8)}}) {
+        TICKET_BLOCK("TITLE", "written by your AI") ai_text(t->title, 17, writing);
+        TICKET_BLOCK("GOAL", "written by your AI") ai_text(t->goal, 14, writing);
+        TICKET_BLOCK("NODES", "from the model") {
+            for (int i = 0; i < t->nodes.n; i++) CLAY_TEXT(cs(t->nodes.v[i]), T(14, C_INK));
+            if (!t->nodes.n) CLAY_TEXT(cs("(none)"), T(14, C_QUIET));
+        }
+        TICKET_BLOCK("FILES YOUR AI MAY CHANGE", "from ticket gen") {
+            for (int i = 0; i < t->files.n; i++) CLAY_TEXT(cs(t->files.v[i]), T(14, C_INK));
+            if (!t->files.n) CLAY_TEXT(cs("(none)"), T(14, C_QUIET));
+        }
+        TICKET_BLOCK("STEP", "from the model") CLAY_TEXT(cs(t->step), T(14, C_INK));
+        if (t->errors.n) {
+            TICKET_BLOCK("LAST RED GATE RUN", TextFormat("%d of %d failed runs", t->failures, t->max_failures)) {
+                for (int i = 0; i < t->errors.n && i < 8; i++) CLAY_TEXT(cs(t->errors.v[i]), T(13, C_RED));
+            }
+        }
+    }
+}
+
+static void ticket_card(void) {
+    int review = app.inline_pty && app.job.running;
+    if (!app.n_tickets || (shown_step() < ST_TICKETS && !review)) return;
+    /* Each new review question brings the card back to its ticket. */
+    static char last_asked[64];
+    char qid[64] = "";
+    int qi, qn;
+    if (review_asking(qid, &qi, &qn) && strcmp(qid, last_asked)) app.ticket_follow = 1;
+    snprintf(last_asked, sizeof last_asked, "%s", qid);
+    buttons_keep_scroll = 1;
+    Clay_ElementDeclaration d = card();
+    d.id = CLAY_ID("Ticket");
+    CLAY(d) { ticket_card_body(); }
+    buttons_keep_scroll = 0;
+}
+
 static void output_body(void) {
     const Job *j = &app.job;
     heading("OUTPUT");
@@ -1049,7 +1345,7 @@ static void output_body(void) {
     CLAY_TEXT(cs(j->running ? "running..." : j->exit_code == 0 ? "finished" : TextFormat("failed (exit %d)", j->exit_code)),
               T(14, j->running ? C_ACCENT : j->exit_code == 0 ? C_GREEN : C_RED));
     if (app.job_note[0]) CLAY_TEXT(cs(app.job_note), T(14, C_ACCENT));
-    if (!j->pty) CLAY_TEXT(tail_lines(&j->out, 0, 24), T(13, C_INK));
+    if (!j->pty || app.inline_pty) CLAY_TEXT(tail_lines(&j->out, 0, 24), T(13, C_INK));
 }
 
 static void text_field(int which, char *buf, const char *placeholder, float width);
@@ -1304,6 +1600,7 @@ static Clay_RenderCommandArray build_project(void) {
             header_row();
             errors_card();
             steps_card();
+            ticket_card();
             output_card();
             ai_card();
             gate_card();
@@ -1405,6 +1702,10 @@ static void open_project(const char *dir) {
     job_clear(&app.job);
     app.modal = 0;
     app.screen = SCREEN_PROJECT;
+    app.ticket_focus[0] = 0;
+    app.ticket_follow = 1;
+    app.tickets_sig = tickets_signature();
+    tickets_reload(0);
     refresh_status();
     SetWindowTitle(TextFormat("stategate - %s", real));
 }
@@ -1540,7 +1841,14 @@ static void dispatch(UiAction a, int arg) {
     case A_COMMIT: run_shell("git add -A && git commit -m \"stategate: model and generated code\"",
                              "git add -A && git commit -q -m 'stategate: model and generated code' && git log --oneline -1"); break;
     case A_TICKET_GEN: run_cli("stategate ticket gen", 0, "ticket", "gen", NULL); break;
-    case A_REVIEW: run_cli("stategate ticket start", 1, "ticket", "start", NULL); break;
+    case A_REVIEW:
+        /* On a pty, as at a terminal, but answered in the ticket card. */
+        run_cli("stategate ticket start", 1, "ticket", "start", NULL);
+        app.modal = 0;
+        app.inline_pty = 1;
+        break;
+    case A_TICKET_PREV: ticket_go(-1); break;
+    case A_TICKET_NEXT: ticket_go(1); break;
     case A_AI_FILL: run_ai(1); break;
     case A_AI_IMPL: run_ai(0); break;
     case A_AI_SAVE: ai_save(); break;
@@ -1837,6 +2145,7 @@ int main(int argc, char **argv) {
         }
         arena_used = 0;
         n_buttons = 0;
+        button_seq = 0;
         Clay_SetLayoutDimensions((Clay_Dimensions){(float)GetScreenWidth(), (float)GetScreenHeight()});
         Vector2 mouse = GetMousePosition();
         Clay_SetPointerState((Clay_Vector2){mouse.x, mouse.y}, IsMouseButtonDown(MOUSE_BUTTON_LEFT));
@@ -1865,6 +2174,7 @@ int main(int argc, char **argv) {
             app.fit_pending = 0;
             arena_used = 0;
             n_buttons = 0;
+            button_seq = 0;
             cmds = build_project();
         }
         handle_clicks();

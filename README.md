@@ -152,7 +152,7 @@ prints its output, so everything the app does you can also do at a terminal:
 | Save to git | `git add -A && git commit` |
 | Draft tickets | `stategate ticket gen` |
 | Fill with AI | `stategate ticket prompt --drafts \| <your AI command>` |
-| Review | `stategate ticket start`, in a dialog: approve, skip or quit per ticket |
+| Start review | `stategate ticket start`, answered in the ticket box: approve, skip or stop per ticket |
 | Implement with AI | `stategate ticket prompt \| <your AI command>`, again for each next ticket |
 | Run gate | `stategate ticket run` while a ticket is active, else `stategate gate` |
 
@@ -175,7 +175,18 @@ the AI's commands don't have. The confirmations run the real command on a
 pseudo-terminal, so they are the same typed confirmations as at a terminal.
 The app reloads the model and the gate result when either file changes.
 
-Below the steps: the output of the last command, the last gate result from
+Once `stategate ticket gen` has drafted tickets, a ticket box sits under
+the steps. It shows one ticket at a time (the arrows step through them, the
+dots are their statuses) in titled sections: the title and goal your AI
+writes, and the nodes, files and step that `ticket gen` took from the model.
+It reads `stategate ticket list --json` again whenever a ticket file changes,
+so each ticket fills in as your AI runs `ticket fill`, and the box moves to
+the ticket that changed. Review runs `stategate ticket start` on a
+pseudo-terminal, as at a terminal, and its question is answered with the
+Approve, Skip and Stop reviewing buttons in the box. `stategate ticket show
+<id>` prints the same sections at a terminal.
+
+Below that: the output of the last command, the last gate result from
 `.fsm/gate.json`, a simulator and the step ladder. Click an event to fire it:
 the active state lights up and the transition it took turns blue; ignored
 events say so. Drag to pan, scroll to zoom, F to fit. The panel scrolls with the wheel,
@@ -206,7 +217,8 @@ frame and exits, which CI uses as a smoke test.
    change the node, step or files. `stategate ticket new` writes a ticket
    from scratch, checked against the model the same way.
 6. **You approve them** with `stategate ticket start`. It walks through every
-   open ticket, showing its goal, nodes and files, and you type `approve` or
+   open ticket, showing it section by section (as `stategate ticket show
+   <id>` does), and you type `approve` or
    `skip` for each at a terminal. Approved tickets queue in id order and the
    first one starts. `stategate ticket start T002` approves and starts one.
 7. **An implementer AI works the active ticket.** `stategate ticket prompt`
