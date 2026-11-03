@@ -132,14 +132,19 @@ under the one you are in, and lists recent projects.
 A project shows the machine on the left and the steps on the right. The
 layout saved in the model places each state in a row and a column (states a
 little apart share one); the app then sizes the grid so nodes never overlap
-and keep room for edge labels at any text size. Each step's button runs the command shown
-under it and prints its output, so everything the app does you can also do at
-a terminal:
+and keep room for edge labels at any text size.
+
+The Steps box shows one step at a time, the one to work on next, and moves on
+by itself when that step is done (the app reads `stategate status --json`).
+The arrows at its top corners go back to an earlier step or look ahead; the
+dots under the step number show which steps are done. A folder without git or
+without stategate's files shows an **Initialize** button, both in the Steps
+box and on the canvas. Each step's button runs the command shown under it and
+prints its output, so everything the app does you can also do at a terminal:
 
 | Step | Button runs |
 |---|---|
-| Git repository | `git init` |
-| Set up stategate | `stategate init` |
+| Initialize | `git init` when there is no `.git`, then `stategate init` |
 | Write the state machine | opens the model in your default editor (`xdg-open`, `open` on macOS) |
 | Validate | `stategate validate` |
 | Generate | `stategate gen` |
@@ -168,8 +173,7 @@ buttons copy the prompt to the clipboard for you to paste into any AI.
 Approving tickets and signing off stay with you: they need a terminal, which
 the AI's commands don't have. The confirmations run the real command on a
 pseudo-terminal, so they are the same typed confirmations as at a terminal.
-The app reads `stategate status --json` to mark each step, and reloads the
-model and the gate result when either file changes.
+The app reloads the model and the gate result when either file changes.
 
 Below the steps: the output of the last command, the last gate result from
 `.fsm/gate.json`, a simulator and the step ladder. Click an event to fire it:
