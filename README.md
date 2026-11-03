@@ -179,7 +179,9 @@ Below the steps: the output of the last command, the last gate result from
 `.fsm/gate.json`, a simulator and the step ladder. Click an event to fire it:
 the active state lights up and the transition it took turns blue; ignored
 events say so. Drag to pan, scroll to zoom, F to fit. The panel scrolls with the wheel,
-its scrollbar, Page Up/Down and Home/End. The machine itself stays
+its scrollbar, Page Up/Down and Home/End. Working through the Steps box
+leaves the panel where it is (the output lands just below it); there is no
+Quit button, close the window to exit. The machine itself stays
 YAML you write by hand.
 
 `--send EV1,EV2` fires events at start-up and `--screenshot out.png` saves one
