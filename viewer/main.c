@@ -123,6 +123,8 @@ typedef struct {
     int n_cols, n_rows;
 
     int sb_drag;      /* dragging the panel scrollbar */
+    int step_view;    /* the step the steps card shows */
+    int step_follow;  /* 1: it follows the current step */
     float sb_grab;    /* where on the thumb it was grabbed */
 } App;
 
@@ -222,6 +224,7 @@ static void load_model(int first) {
 
     /* Keep the simulator where it was when the active state still exists. */
     char keep[256] = "";
+    if (!app.have_model) first = 1; /* the first good model in this folder: fit it */
     if (app.have_model) snprintf(keep, sizeof keep, "%s", app.model.states[app.cur].id);
     app.model = m; /* the old model leaks; reloads are rare and small */
     app.have_model = 1;
@@ -534,12 +537,8 @@ static void draw_canvas(void) {
     } else {
         float u = app.ui;
         if (app.model_path) text("No valid model loaded yet. See the panel for errors.", 24 * u, 24 * u, 18 * u, QUIET);
-        else {
-            text("No model in this folder yet.", 24 * u, 24 * u, 22 * u, INK);
-            text(TextFormat("Write %s.yaml here with your editor (examples/posture/posture.yaml is a template).",
-                            strrchr(app.project, '/') ? strrchr(app.project, '/') + 1 : "model"), 24 * u, 58 * u, 16 * u, QUIET);
-            text("It appears here as soon as you save it.", 24, 82, 16, QUIET);
-        }
+        else if (!app.st.ok) text("No model in this folder yet.", 24 * u, 24 * u, 22 * u, INK);
+        /* otherwise canvas_notice_card says what to do */
     }
     text("drag to pan, scroll to zoom, F to fit, Ctrl +/- text size", 16 * app.ui, ch - 26 * app.ui, 14 * app.ui, QUIET);
     EndScissorMode();
@@ -588,7 +587,7 @@ static Clay_ElementDeclaration card(void) {
 
 typedef enum {
     A_NONE, A_EVENT, A_RESET,
-    A_HOME, A_QUIT, A_GIT_INIT, A_INIT, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
+    A_HOME, A_QUIT, A_INIT, A_STEP_BACK, A_STEP_FWD, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
     A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_SAVE,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
@@ -837,22 +836,68 @@ static const char *short_path(const char *p) {
     return o;
 }
 
-static Clay_ElementDeclaration step_decl(void) {
-    return (Clay_ElementDeclaration){.layout = {.childGap = PX(10), .sizing = {.width = CLAY_SIZING_GROW(0)}, .padding = {PX(0), PX(0), PX(3), PX(3)},
-                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}};
+/* The steps, in order. The card shows one at a time: the first one not
+ * done, unless the arrows took the person to another. */
+enum {
+    ST_INIT, ST_MODEL, ST_VALIDATE, ST_GEN, ST_SIGNOFF, ST_SAVE,
+    ST_TICKETS, ST_REVIEW, ST_IMPLEMENT, ST_GATE, N_STEPS
+};
+
+static int initialized(const Status *s) { return s->git && s->init; }
+
+static void step_marks(StepMark m[N_STEPS]) {
+    const Status *s = &app.st;
+    int has_model = app.model_path != NULL;
+    int tickets_any = s->t_open + s->t_approved + s->t_active + s->t_done + s->t_locked;
+    int saved = s->git && s->has_commit && !s->dirty;
+    m[ST_INIT] = initialized(s) ? S_DONE : S_TODO;
+    m[ST_MODEL] = has_model && s->valid ? S_DONE : S_TODO;
+    m[ST_VALIDATE] = s->valid ? S_DONE : S_TODO;
+    m[ST_GEN] = s->generated ? S_DONE : S_TODO;
+    m[ST_SIGNOFF] = s->valid && s->signed_off ? S_DONE : S_TODO;
+    /* Once a ticket is active, `ticket run` commits each ticket's work. */
+    m[ST_SAVE] = saved || s->t_active > 0 ? S_DONE : S_TODO;
+    m[ST_TICKETS] = tickets_any && !s->t_draft ? S_DONE : S_TODO;
+    m[ST_REVIEW] = tickets_any && !s->t_open && !s->t_draft ? S_DONE : S_TODO;
+    m[ST_IMPLEMENT] = tickets_any && !s->t_draft && !s->t_open && !s->t_approved && !s->t_active && !s->t_locked ? S_DONE : S_TODO;
+    m[ST_GATE] = !s->t_active && !strcmp(s->gate, "green") ? S_DONE : S_TODO;
 }
 
-/* The mark and the text of a step row; the caller adds its buttons after. */
-static void step_head(int num, const char *title, StepMark mark, int is_next, const char *detail) {
-    Clay_Color mc = mark == S_DONE ? C_GREEN : is_next ? C_ACCENT : C_QUIET;
-    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(PXF(26))}}}) {
-        CLAY_TEXT(mark == S_DONE ? cs("OK") : num ? csf("%d", num) : cs("-"), T(14, mc));
+/* The step to work on: the first one not done, or the last when all are. */
+static int current_step(void) {
+    StepMark m[N_STEPS];
+    step_marks(m);
+    for (int i = 0; i < N_STEPS; i++) if (m[i] != S_DONE) return i;
+    return N_STEPS - 1;
+}
+
+/* The step the card shows. It follows the current step until the person
+ * steps away with an arrow, and follows again once they come back to it. */
+static int shown_step(void) {
+    int cur = current_step();
+    if (app.step_follow || app.step_view < 0 || app.step_view >= N_STEPS) {
+        app.step_view = cur;
+        app.step_follow = 1;
     }
-    /* No clip here: Clay 0.14 keeps at most 10 clipping containers per layout. */
-    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
-        CLAY_TEXT(cs(title), T(16, is_next && mark != S_DONE ? C_ACCENT : C_INK));
-        if (detail && *detail) CLAY_TEXT(cs(detail), T(13, C_QUIET));
-    }
+    return app.step_view;
+}
+
+static void step_go(int delta) {
+    int v = shown_step() + delta;
+    if (v < 0 || v >= N_STEPS) return;
+    app.step_view = v;
+    app.step_follow = v == current_step();
+}
+
+static const char *const STEP_TITLES[N_STEPS] = {
+    "Initialize the project", "Write the state machine (by hand)", "Validate", "Generate code and tests",
+    "Sign off locked safety items", "Save to git", "Tickets: draft, AI fills in", "Review tickets: approve or skip",
+    "AI writes node logic, ticket by ticket", "Run the 11 checks",
+};
+
+static void arrow(const char *label, UiAction a, int enabled) {
+    if (enabled) button(label, a, 0, 1, 0);
+    else CLAY({.layout = {.sizing = {.width = CLAY_SIZING_FIXED(PXF(36))}}}) {}
 }
 
 static void steps_card_body(void) {
@@ -861,88 +906,128 @@ static void steps_card_body(void) {
     int has_model = app.model_path != NULL;
     int tickets_any = s->t_open + s->t_approved + s->t_active + s->t_done + s->t_locked;
     int saved = s->git && s->has_commit && !s->dirty;
-    StepMark m[12];
-    m[1] = S_DONE;
-    m[2] = s->git ? S_DONE : S_TODO;
-    m[3] = s->init ? S_DONE : S_TODO;
-    m[4] = has_model && s->valid ? S_DONE : S_TODO;
-    m[5] = s->valid ? S_DONE : S_TODO;
-    m[6] = s->generated ? S_DONE : S_TODO;
-    m[7] = s->valid && s->signed_off ? S_DONE : S_TODO;
-    /* Once a ticket is active, `ticket run` commits each ticket's work. */
-    int ticket_work = s->t_active > 0;
-    m[0] = saved || ticket_work ? S_DONE : S_TODO; /* commit */
-    m[8] = tickets_any && !s->t_draft ? S_DONE : S_TODO;
-    m[9] = tickets_any && !s->t_open && !s->t_draft ? S_DONE : S_TODO;
-    m[10] = tickets_any && !s->t_draft && !s->t_open && !s->t_approved && !s->t_active && !s->t_locked ? S_DONE : S_LATER;
-    m[11] = !s->t_active && !strcmp(s->gate, "green") ? S_DONE : S_TODO;
-    static const int order[] = {2, 3, 4, 5, 6, 7, 0, 8, 9, 10, 11};
-    int next = -1;
-    for (int i = 0; i < 11 && next < 0; i++) if (m[order[i]] != S_DONE) next = order[i];
+    StepMark m[N_STEPS];
+    step_marks(m);
+    int cur = current_step(), k = shown_step();
+    int all_done = m[N_STEPS - 1] == S_DONE && cur == N_STEPS - 1;
+    int is_next = k == cur && m[k] != S_DONE;
 
-    heading("STEPS  (each button runs the stategate command shown)");
-    CLAY(step_decl()) {
-        step_head(1, "Project folder", m[1], 0, short_path(app.project));
-        button("Switch", A_HOME, 0, !busy, 0);
+    /* Back, where we are, forward. */
+    CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+        arrow("<", A_STEP_BACK, k > 0);
+        CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(6),
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}}) {
+            CLAY_TEXT(csf("STEP %d OF %d%s", k + 1, N_STEPS, k == cur ? "" : k < cur ? "  (done)" : "  (later)"), T(13, C_QUIET));
+            /* One dot per step: green done, blue the one shown. */
+            CLAY({.layout = {.childGap = PX(5)}}) {
+                for (int i = 0; i < N_STEPS; i++)
+                    CLAY({.layout = {.sizing = {CLAY_SIZING_FIXED(PXF(i == k ? 18 : 8)), CLAY_SIZING_FIXED(PXF(8))}},
+                          .backgroundColor = i == k ? C_ACCENT : m[i] == S_DONE ? C_GREEN : C_RULE,
+                          .cornerRadius = CLAY_CORNER_RADIUS(PX(4))}) {}
+            }
+        }
+        arrow(">", A_STEP_FWD, k < N_STEPS - 1);
     }
-    CLAY(step_decl()) {
-        step_head(2, "Git repository", m[2], next == 2, s->git ? (s->has_commit ? "ready" : "ready, no commits yet") : "$ git init");
-        if (!s->git) button("git init", A_GIT_INIT, 0, !busy, next == 2);
+
+    const char *detail = "";
+    switch (k) {
+    case ST_INIT:
+        detail = initialized(s) ? "git repository, AGENTS.md, CLAUDE.md, CHANGELOG.md and the pre-commit hook are in place"
+                 : !s->git ? "$ git init && stategate init  (AGENTS.md, CLAUDE.md, CHANGELOG.md, pre-commit hook)"
+                           : "$ stategate init  (AGENTS.md, CLAUDE.md, CHANGELOG.md, pre-commit hook)";
+        break;
+    case ST_MODEL:
+        detail = !has_model ? "create the model .yaml in this folder with your editor; it appears on the left when saved"
+                 : s->valid ? app.model_path : "the model has errors: see the box above the steps";
+        break;
+    case ST_VALIDATE: detail = "$ stategate validate"; break;
+    case ST_GEN: detail = s->generated ? "up to date with the model" : "$ stategate gen"; break;
+    case ST_SIGNOFF:
+        detail = !s->valid ? "$ stategate signoff" : !s->locked_items ? "nothing is locked: not needed"
+                 : s->signed_off ? "signed" : "$ stategate signoff  (you confirm)";
+        break;
+    case ST_SAVE:
+        detail = !s->git ? "needs a repository" : saved ? "everything is committed"
+                 : s->t_active > 0 ? "Run gate commits each ticket's work when it passes"
+                                   : "$ git add -A && git commit  (needed before review)";
+        break;
+    case ST_TICKETS:
+        detail = s->t_draft ? TextFormat("%d draft(s) need a title and goal from your AI", s->t_draft)
+                 : tickets_any ? TextFormat("%d ticket(s) written", tickets_any) : "$ stategate ticket gen";
+        break;
+    case ST_REVIEW:
+        detail = s->t_open ? TextFormat("%d open ticket(s) to review", s->t_open) : "$ stategate ticket start  (you decide)";
+        break;
+    case ST_IMPLEMENT:
+        detail = *s->current ? TextFormat("active: %s (%s), %d approved after it. %s", s->current, s->current_status, s->t_approved,
+                                          app.ai_cmd[0] ? "Your AI works each ticket until green." : "Paste the prompt into your AI.")
+                 : s->t_approved ? TextFormat("%d approved, waiting", s->t_approved) : "needs an approved ticket";
+        break;
+    case ST_GATE:
+        detail = !strcmp(s->current_status, "active") ? "$ stategate ticket run  (green commits and finishes the ticket)"
+                                                      : "$ stategate gate";
+        break;
     }
-    CLAY(step_decl()) {
-        step_head(3, "Set up stategate", m[3], next == 3, s->init ? "AGENTS.md, CLAUDE.md, CHANGELOG.md, pre-commit hook" : "$ stategate init");
-        if (!s->init) button("Set up", A_INIT, 0, !busy, next == 3);
+
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(6),
+                     .padding = {PX(4), PX(4), PX(10), PX(4)}}}) {
+        CLAY({.layout = {.childGap = PX(10), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+            if (m[k] == S_DONE) CLAY_TEXT(cs("OK"), T(16, C_GREEN));
+            CLAY_TEXT(cs(STEP_TITLES[k]), T(20, is_next ? C_ACCENT : C_INK));
+        }
+        CLAY_TEXT(cs(detail), T(14, C_QUIET));
+        if (all_done) CLAY_TEXT(cs("Every step is done. Change the model to start the next round."), T(14, C_GREEN));
     }
-    CLAY(step_decl()) {
-        step_head(4, "Write the state machine (by hand)", m[4], next == 4,
-                  !has_model ? "create the model .yaml in this folder with your editor" :
-                  s->valid ? app.model_path : "the model has errors: see Validate");
-        if (has_model) button("Open in editor", A_EDIT, 0, 1, 0);
+
+    CLAY({.layout = {.childGap = PX(8), .padding = {PX(4), PX(4), PX(4), PX(4)}}}) {
+        switch (k) {
+        case ST_INIT: if (!initialized(s)) button("Initialize", A_INIT, 0, !busy, 1); break;
+        case ST_MODEL: if (has_model) button("Open in editor", A_EDIT, 0, 1, is_next); break;
+        case ST_VALIDATE: button("Validate", A_VALIDATE, 0, !busy && has_model, is_next); break;
+        case ST_GEN: button("Generate", A_GEN, 0, !busy && s->valid, is_next); break;
+        case ST_SIGNOFF:
+            if (s->valid && s->locked_items && !s->signed_off) button("Sign off...", A_SIGNOFF, 0, !busy, is_next);
+            break;
+        case ST_SAVE:
+            if (s->git && !saved && s->t_active == 0) button("Commit", A_COMMIT, 0, !busy && s->dirty, is_next && s->dirty);
+            break;
+        case ST_TICKETS:
+            button("Draft tickets", A_TICKET_GEN, 0, !busy && s->generated && s->init, is_next && !s->t_draft);
+            button(app.ai_cmd[0] ? "Fill with AI" : "Copy AI prompt", A_AI_FILL, 0, !busy && s->t_draft > 0, is_next && s->t_draft);
+            break;
+        case ST_REVIEW: button("Review...", A_REVIEW, 0, !busy && s->t_open > 0 && saved, is_next); break;
+        case ST_IMPLEMENT:
+            button(app.ai_cmd[0] ? "Implement with AI" : "Copy AI prompt", A_AI_IMPL, 0,
+                   !busy && !strcmp(s->current_status, "active"), is_next && !strcmp(s->current_status, "active"));
+            break;
+        case ST_GATE: button("Run gate", A_GATE, 0, !busy && has_model, is_next); break;
+        }
     }
-    CLAY(step_decl()) {
-        step_head(5, "Validate", m[5], next == 5, "$ stategate validate");
-        button("Validate", A_VALIDATE, 0, !busy && has_model, next == 5);
-    }
-    CLAY(step_decl()) {
-        step_head(6, "Generate code and tests", m[6], next == 6, s->generated ? "up to date with the model" : "$ stategate gen");
-        button("Generate", A_GEN, 0, !busy && s->valid, next == 6);
-    }
-    CLAY(step_decl()) {
-        step_head(7, "Sign off locked safety items", m[7], next == 7,
-                  !s->valid ? "$ stategate signoff" : !s->locked_items ? "nothing is locked: not needed" :
-                  s->signed_off ? "signed" : "$ stategate signoff  (you confirm)");
-        if (s->valid && s->locked_items && !s->signed_off) button("Sign off...", A_SIGNOFF, 0, !busy, next == 7);
-    }
-    CLAY(step_decl()) {
-        step_head(0, "Save to git", m[0], next == 0,
-                  !s->git ? "needs a repository" : saved ? "everything is committed" :
-                  ticket_work ? "Run gate commits each ticket's work when it passes" : "$ git add -A && git commit  (needed before review)");
-        if (s->git && !saved && !ticket_work) button("Commit", A_COMMIT, 0, !busy && s->dirty, next == 0 && s->dirty);
-    }
-    CLAY(step_decl()) {
-        step_head(8, "Tickets: draft, AI fills in", m[8], next == 8,
-                  s->t_draft ? TextFormat("%d draft(s) need a title and goal from your AI", s->t_draft)
-                             : tickets_any ? TextFormat("%d ticket(s) written", tickets_any) : "$ stategate ticket gen");
-        button("Draft tickets", A_TICKET_GEN, 0, !busy && s->generated && s->init, next == 8 && !s->t_draft);
-        button(app.ai_cmd[0] ? "Fill with AI" : "Copy AI prompt", A_AI_FILL, 0, !busy && s->t_draft > 0, next == 8 && s->t_draft);
-    }
-    CLAY(step_decl()) {
-        step_head(9, "Review tickets: approve or skip", m[9], next == 9,
-                  s->t_open ? TextFormat("%d open ticket(s) to review", s->t_open) : "$ stategate ticket start  (you decide)");
-        button("Review...", A_REVIEW, 0, !busy && s->t_open > 0 && saved, next == 9);
-    }
-    CLAY(step_decl()) {
-        step_head(10, "AI writes node logic, ticket by ticket", m[10], next == 10,
-                  *s->current ? TextFormat("active: %s (%s), %d approved after it. %s", s->current, s->current_status, s->t_approved,
-                                           app.ai_cmd[0] ? "Your AI works each ticket until green." : "Paste the prompt into your AI.") :
-                  s->t_approved ? TextFormat("%d approved, waiting", s->t_approved) : "needs an approved ticket");
-        button(app.ai_cmd[0] ? "Implement with AI" : "Copy AI prompt", A_AI_IMPL, 0,
-               !busy && !strcmp(s->current_status, "active"), next == 10 && !strcmp(s->current_status, "active"));
-    }
-    CLAY(step_decl()) {
-        step_head(11, "Run the 11 checks", m[11], next == 11,
-                  !strcmp(s->current_status, "active") ? "$ stategate ticket run  (green commits and finishes the ticket)" : "$ stategate gate");
-        button("Run gate", A_GATE, 0, !busy && has_model, next == 11);
+}
+
+/* Over the canvas while the folder is not set up: the same Initialize. */
+/* A card centered on the canvas when there is nothing to draw yet:
+ * the folder needs Initialize, or the model file is not there. */
+static void canvas_notice_card(void) {
+    if (!app.st.ok || app.have_model) return;
+    int need_init = !initialized(&app.st);
+    if (!need_init && app.model_path) return; /* a model that does not parse: the panel shows why */
+    const char *name = strrchr(app.project, '/') ? strrchr(app.project, '/') + 1 : "model";
+    CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_FIXED(fminf(PXF(560), canvas_width() * 0.8f))},
+                     .padding = CLAY_PADDING_ALL(PX(22)), .childGap = PX(10)},
+          .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(PX(10)), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
+          .floating = {.attachTo = CLAY_ATTACH_TO_PARENT, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_CENTER, .parent = CLAY_ATTACH_POINT_CENTER_CENTER}}}) {
+        if (need_init) {
+            CLAY_TEXT(cs("This folder is not set up for stategate yet"), T(20, C_INK));
+            CLAY_TEXT(cs(app.st.git ? "Initialize writes AGENTS.md, CLAUDE.md, CHANGELOG.md and the pre-commit hook (stategate init)."
+                                    : "Initialize makes it a git repository and writes AGENTS.md, CLAUDE.md, CHANGELOG.md and the pre-commit hook (git init, then stategate init)."),
+                      T(14, C_QUIET));
+            button("Initialize", A_INIT, 0, !app.job.running, 1);
+        } else {
+            CLAY_TEXT(cs("No model in this folder yet"), T(20, C_INK));
+            CLAY_TEXT(csf("Write %s.yaml here with your editor (examples/posture/posture.yaml is a template). It appears here as soon as you save it.", name),
+                      T(14, C_QUIET));
+        }
     }
 }
 
@@ -1204,6 +1289,7 @@ static Clay_RenderCommandArray build_project(void) {
     CLAY({.id = CLAY_ID("Root"), .layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}}}) {
         CLAY({.id = CLAY_ID("CanvasSpace"), .layout = {.sizing = {.width = CLAY_SIZING_FIXED(canvas_width()), .height = CLAY_SIZING_GROW(0)}}}) {
             canvas_grid();
+            canvas_notice_card();
         }
         CLAY({.id = CLAY_ID("Panel"),
               .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {CLAY_SIZING_FIXED(panel_width()), CLAY_SIZING_GROW(0)}, .padding = CLAY_PADDING_ALL(PX(14)), .childGap = PX(12)},
@@ -1295,6 +1381,7 @@ static void open_project(const char *dir) {
         app.screen = SCREEN_HOME;
         return;
     }
+    app.step_follow = 1; /* the steps card starts on the step to work on */
     snprintf(app.project, sizeof app.project, "%s", real);
     if (!no_recent) recent_add(real);
     StrList errors = {0};
@@ -1437,8 +1524,15 @@ static void dispatch(UiAction a, int arg) {
     case A_RESET: sim_reset(); break;
     case A_HOME: go_home(); break;
     case A_QUIT: quit_requested = 1; break;
-    case A_GIT_INIT: { char *argv[] = {"git", "init", NULL}; job_start(&app.job, "git init", argv, 0); app.modal = 0; break; }
-    case A_INIT: run_cli("stategate init", 0, "init", NULL, NULL); break;
+    case A_INIT: {
+        /* One step: a repository if there is none, then stategate init. */
+        char script[PATH_MAX + 64];
+        snprintf(script, sizeof script, "[ -d .git ] || git init -q && '%s' init", app.sg);
+        run_shell(app.st.git ? "stategate init" : "git init && stategate init", script);
+        break;
+    }
+    case A_STEP_BACK: step_go(-1); break;
+    case A_STEP_FWD: step_go(1); break;
     case A_EDIT: if (app.model_path) open_in_editor(app.model_path); break;
     case A_VALIDATE: run_cli("stategate validate", 0, "validate", NULL, NULL); break;
     case A_GEN: run_cli("stategate gen", 0, "gen", NULL, NULL); break;
