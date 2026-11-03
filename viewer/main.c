@@ -587,7 +587,7 @@ static Clay_ElementDeclaration card(void) {
 
 typedef enum {
     A_NONE, A_EVENT, A_RESET,
-    A_HOME, A_QUIT, A_INIT, A_STEP_BACK, A_STEP_FWD, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
+    A_HOME, A_INIT, A_STEP_BACK, A_STEP_FWD, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
     A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_SAVE,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
@@ -598,13 +598,15 @@ typedef struct {
     UiAction action;
     int arg;
     const char *text;
+    int keep_scroll; /* a Steps card button: the panel stays where it is */
 } Button;
 
 static Button buttons[256];
 static int n_buttons;
+static int buttons_keep_scroll; /* set while the Steps card registers its buttons */
 
 static void button_reg(Clay_ElementId id, UiAction a, int arg, const char *text) {
-    if (n_buttons < (int)(sizeof buttons / sizeof buttons[0])) buttons[n_buttons++] = (Button){id, a, arg, text};
+    if (n_buttons < (int)(sizeof buttons / sizeof buttons[0])) buttons[n_buttons++] = (Button){id, a, arg, text, buttons_keep_scroll};
 }
 
 /* A button; disabled ones draw quiet and do nothing. */
@@ -1031,8 +1033,12 @@ static void canvas_notice_card(void) {
     }
 }
 
+/* Working through the steps keeps the panel where it is: the output card
+ * sits right below, and jumping to it would push the step out of view. */
 static void steps_card(void) {
+    buttons_keep_scroll = 1;
     CLAY(card()) { steps_card_body(); }
+    buttons_keep_scroll = 0;
 }
 
 static void output_body(void) {
@@ -1182,7 +1188,6 @@ static void header_row(void) {
         CLAY_TEXT(cs("stategate"), T(22, C_INK));
         CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
         button("Projects", A_HOME, 0, !app.job.running, 0);
-        button("Quit", A_QUIT, 0, 1, 0);
     }
 }
 
@@ -1473,8 +1478,6 @@ static Clay_RenderCommandArray build_home(void) {
                 CLAY_TEXT(cs("stategate"), T(34, C_INK));
                 CLAY_TEXT(cs("Design the state machine, let your AI write the nodes, let the gate decide."), T(16, C_QUIET));
             }
-            CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
-            button("Quit", A_QUIT, 0, 1, 0);
         }
         CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(20)}}) {
             CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_PERCENT(0.62f)}, .padding = CLAY_PADDING_ALL(PX(16)), .childGap = PX(10)},
@@ -1505,8 +1508,6 @@ static void go_home(void) {
 
 /* ---- input ---- */
 
-static int quit_requested;
-
 static void open_in_editor(const char *path) {
     char cmd[PATH_MAX + 64];
 #ifdef __APPLE__
@@ -1523,7 +1524,6 @@ static void dispatch(UiAction a, int arg) {
     case A_EVENT: if (app.have_model && arg < app.model.events.n) sim_send(app.model.events.v[arg]); break;
     case A_RESET: sim_reset(); break;
     case A_HOME: go_home(); break;
-    case A_QUIT: quit_requested = 1; break;
     case A_INIT: {
         /* One step: a repository if there is none, then stategate init. */
         char script[PATH_MAX + 64];
@@ -1601,6 +1601,7 @@ static void handle_clicks(void) {
         UiAction a = buttons[i].action;
         if (modal && a != A_MODAL_SEND && a != A_MODAL_CLOSE && a != A_MODAL_STOP) continue;
         dispatch(a, buttons[i].arg);
+        if (buttons[i].keep_scroll) app.show_output = 0;
         hit = 1;
         break;
     }
@@ -1806,7 +1807,7 @@ int main(int argc, char **argv) {
 
     double last_poll = 0;
     int frames = 0;
-    while (!WindowShouldClose() && !quit_requested) {
+    while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
         {
             /* Ctrl +, Ctrl - and Ctrl 0 size the text, as in a browser. */
