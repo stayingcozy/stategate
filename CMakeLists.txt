@@ -29,6 +29,7 @@ target_include_directories(cjson PUBLIC third_party/cjson)
 
 add_executable(stategate
   src/main.c
+  src/ai.c
   src/mcp.c
   src/gen_rust.c
   src/manifest.c

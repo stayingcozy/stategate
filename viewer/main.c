@@ -82,6 +82,8 @@ typedef struct {
 
 typedef enum { SCREEN_HOME, SCREEN_PROJECT } Screen;
 
+
+
 typedef struct {
     Screen screen;
     char project[PATH_MAX];
@@ -97,14 +99,14 @@ typedef struct {
     char browse[PATH_MAX];
     StrList dirs, recent;
     char path_in[PATH_MAX], name_in[128];
-    int focus; /* 0 none, 1 path field, 2 new-folder name, 3 AI command */
+    int focus; /* 0 none, 1 path field, 2 new-folder name */
     char home_msg[256];
     int show_output; /* scroll the panel to the output card next frame */
     float ui;        /* text and spacing scale: grows with the window, Ctrl +/- adjust */
     float ui_mult;   /* the person's Ctrl +/- factor on top */
 
     /* Your AI: a command the prompt is piped into, or empty to copy it. */
-    char ai_cmd[1024], ai_in[1024];
+    int have_claude;     /* `claude` is on PATH */
     int copy_on_finish;  /* put the finished job's output on the clipboard */
     int ai_loop;         /* implementing: run the AI again for each next ticket */
     char ai_ticket[64];  /* the ticket the AI was last run on */
@@ -612,7 +614,7 @@ static Clay_ElementDeclaration card(void) {
 typedef enum {
     A_NONE, A_EVENT, A_RESET,
     A_HOME, A_INIT, A_STEP_BACK, A_STEP_FWD, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
-    A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_SAVE,
+    A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_CONNECT, A_AI_CHECK, A_AI_CONFIG,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP, A_TICKET_PREV, A_TICKET_NEXT,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
 } UiAction;
@@ -680,54 +682,25 @@ static void run_shell(const char *title, const char *script) {
 
 /* ---- your AI ---- */
 
-static char *ai_path(void) {
-    static char p[PATH_MAX];
-    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
-    if (xdg && *xdg) snprintf(p, sizeof p, "%s/stategate/ai_command", xdg);
-    else snprintf(p, sizeof p, "%s/.config/stategate/ai_command", home ? home : ".");
-    return p;
-}
-
 static void ai_load(void) {
-    char *text = read_file(ai_path(), NULL);
-    app.ai_cmd[0] = 0;
-    if (text) {
-        text[strcspn(text, "\n")] = 0;
-        snprintf(app.ai_cmd, sizeof app.ai_cmd, "%s", text);
-        free(text);
-    }
-    snprintf(app.ai_in, sizeof app.ai_in, "%s", app.ai_cmd);
+    int st;
+    free(run_capture("command -v claude >/dev/null 2>&1", &st));
+    app.have_claude = st == 0;
 }
 
-static void ai_save(void) {
-    snprintf(app.ai_cmd, sizeof app.ai_cmd, "%s", app.ai_in);
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof dir, "%s", ai_path());
-    *strrchr(dir, '/') = 0;
-    mkdirs(dir);
-    SB b;
-    sb_init(&b);
-    sb_printf(&b, "%s\n", app.ai_cmd);
-    write_file(ai_path(), b.s, b.len);
-    free(b.s);
-    app.focus = 0;
-}
-
-/* An AI step: with a command set, pipe the prompt into it; without one, put
- * the prompt on the clipboard to paste into any AI. */
-static void run_ai(int drafts) {
+/* An AI step: an MCP server request (Claude Code with only the stategate
+ * MCP tools), or the prompt on the clipboard to paste into any AI. */
+static void run_ai(int drafts, int copy) {
     if (app.job.running) return;
-    const char *pargs = drafts ? "ticket prompt --drafts" : "ticket prompt";
-    if (!app.ai_cmd[0]) {
+    if (copy) {
         if (drafts) run_cli("stategate ticket prompt --drafts", 0, "ticket", "prompt", "--drafts");
         else run_cli("stategate ticket prompt", 0, "ticket", "prompt", NULL);
         app.copy_on_finish = 1;
         return;
     }
-    char script[PATH_MAX + 1200], title[1300];
-    snprintf(script, sizeof script, "'%s' %s | %s", app.sg, pargs, app.ai_cmd);
-    snprintf(title, sizeof title, "stategate %s | %s", pargs, app.ai_cmd);
-    run_shell(title, script);
+    /* The tools carry the task: get_task returns the brief. */
+    if (drafts) run_cli("stategate ai fill", 0, "ai", "fill", NULL);
+    else run_cli("stategate ai work", 0, "ai", "work", NULL);
     app.ai_loop = !drafts;
     snprintf(app.ai_ticket, sizeof app.ai_ticket, "%s", app.st.current);
 }
@@ -738,8 +711,9 @@ static void job_finished(void) {
         app.copy_on_finish = 0;
         if (app.job.exit_code == 0 && app.job.out.s) {
             SetClipboardText(app.job.out.s);
-            snprintf(app.job_note, sizeof app.job_note,
-                     "Copied to the clipboard: paste it into your AI.");
+            snprintf(app.job_note, sizeof app.job_note, "%s",
+                     strstr(app.job.title, "mcp config") ? "Copied to the clipboard: paste it into your MCP client's servers config."
+                                                         : "Copied to the clipboard: paste it into your AI.");
         }
         return;
     }
@@ -751,7 +725,7 @@ static void job_finished(void) {
     if (!strcmp(app.st.current_status, "active") && strcmp(app.st.current, app.ai_ticket)) {
         char prev[64];
         snprintf(prev, sizeof prev, "%s", app.ai_ticket);
-        run_ai(0);
+        run_ai(0, 0);
         snprintf(app.job_note, sizeof app.job_note, "%s is done; now %s.", prev, app.st.current);
     } else if (!strcmp(app.st.current_status, "active")) {
         snprintf(app.job_note, sizeof app.job_note, "%s is still active: the gate is not green yet. See the gate below.", app.ai_ticket);
@@ -1086,7 +1060,7 @@ static void steps_card_body(void) {
         break;
     case ST_IMPLEMENT:
         detail = *s->current ? TextFormat("active: %s (%s), %d approved after it. %s", s->current, s->current_status, s->t_approved,
-                                          app.ai_cmd[0] ? "Your AI works each ticket until green." : "Paste the prompt into your AI.")
+                                          "An MCP server request works each ticket until green.")
                  : s->t_approved ? TextFormat("%d approved, waiting", s->t_approved) : "needs an approved ticket";
         break;
     case ST_GATE:
@@ -1119,12 +1093,16 @@ static void steps_card_body(void) {
             break;
         case ST_TICKETS:
             button("Draft tickets", A_TICKET_GEN, 0, !busy && s->generated && s->init, is_next && !s->t_draft);
-            button(app.ai_cmd[0] ? "Fill with AI" : "Copy AI prompt", A_AI_FILL, 0, !busy && s->t_draft > 0, is_next && s->t_draft);
+            button("MCP Server Request", A_AI_FILL, 0, !busy && s->t_draft > 0 && app.have_claude, is_next && s->t_draft && app.have_claude);
+            button("Copy Prompt", A_AI_FILL, 1, !busy && s->t_draft > 0, is_next && s->t_draft && !app.have_claude);
             break;
         case ST_REVIEW: button("Start review", A_REVIEW, 0, !busy && s->t_open > 0 && saved, is_next); break;
         case ST_IMPLEMENT:
-            button(app.ai_cmd[0] ? "Implement with AI" : "Copy AI prompt", A_AI_IMPL, 0,
-                   !busy && !strcmp(s->current_status, "active"), is_next && !strcmp(s->current_status, "active"));
+        {
+            int active = !strcmp(s->current_status, "active");
+            button("MCP Server Request", A_AI_IMPL, 0, !busy && active && app.have_claude, is_next && active && app.have_claude);
+            button("Copy Prompt", A_AI_IMPL, 1, !busy && active, is_next && active && !app.have_claude);
+        }
             break;
         case ST_GATE: button("Run gate", A_GATE, 0, !busy && has_model, is_next); break;
         }
@@ -1261,7 +1239,7 @@ static void ticket_card_body(void) {
     int qi = 0, qn = 0;
     int asking = review_asking(qid, &qi, &qn) && !strcmp(qid, t->id);
     int reviewing = app.inline_pty && app.job.running;
-    int writing = app.job.running && strstr(app.job.title, "--drafts") && !strcmp(t->status, "draft");
+    int writing = app.job.running && (strstr(app.job.title, "--drafts") || strstr(app.job.title, "ai fill")) && !strcmp(t->status, "draft");
 
     /* Back, which ticket, forward: like the steps above. */
     CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
@@ -1350,15 +1328,26 @@ static void output_body(void) {
 
 static void text_field(int which, char *buf, const char *placeholder, float width);
 
+
 static void ai_card(void) {
     CLAY(card()) {
         heading("YOUR AI");
-        CLAY_TEXT(cs(app.ai_cmd[0] ? "The AI buttons pipe their prompt into this command, run in the project folder:"
-                                   : "No command set: the AI buttons copy the prompt for you to paste. Or set a command the prompt is piped into:"),
+        CLAY_TEXT(cs("The AI steps (tickets and implementing) each have two buttons:"), T(13, C_QUIET));
+        CLAY_TEXT(cs("MCP Server Request runs Claude Code headless with only the stategate MCP tools: it reads the project, "
+                     "fills in tickets, writes the active ticket's files and runs the gate, and can do nothing else."),
+                  T(13, C_INK));
+        CLAY_TEXT(cs("$ stategate ai fill   /   $ stategate ai work"), T(13, C_QUIET));
+        if (!app.have_claude)
+            CLAY_TEXT(cs("claude is not on PATH: install Claude Code to use MCP Server Request."), T(14, C_AMBER));
+        CLAY_TEXT(cs("Copy Prompt puts the prompt on the clipboard for you to paste into any AI."), T(13, C_INK));
+        CLAY_TEXT(cs("$ stategate ticket prompt --drafts   /   $ stategate ticket prompt"), T(13, C_QUIET));
+        CLAY_TEXT(cs("Any MCP client can use the same tools: connect your own Claude Code chat in this folder, or copy the "
+                     "server entry into another client's MCP settings (Cursor, Claude Desktop, ...)."),
                   T(13, C_QUIET));
-        CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}, .childGap = PX(8), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
-            text_field(3, app.ai_in, "e.g. claude -p --permission-mode acceptEdits ...", 0);
-            button("Save", A_AI_SAVE, 0, strcmp(app.ai_in, app.ai_cmd) != 0, strcmp(app.ai_in, app.ai_cmd) != 0);
+        CLAY({.layout = {.childGap = PX(8)}}) {
+            button("Connect Claude Code", A_AI_CONNECT, 0, !app.job.running && app.have_claude, 0);
+            button("Check", A_AI_CHECK, 0, !app.job.running && app.have_claude, 0);
+            button("Copy MCP config", A_AI_CONFIG, 0, !app.job.running, 0);
         }
     }
 }
@@ -1849,9 +1838,14 @@ static void dispatch(UiAction a, int arg) {
         break;
     case A_TICKET_PREV: ticket_go(-1); break;
     case A_TICKET_NEXT: ticket_go(1); break;
-    case A_AI_FILL: run_ai(1); break;
-    case A_AI_IMPL: run_ai(0); break;
-    case A_AI_SAVE: ai_save(); break;
+    case A_AI_FILL: run_ai(1, arg); break;
+    case A_AI_IMPL: run_ai(0, arg); break;
+    case A_AI_CONNECT: run_cli("stategate ai connect", 0, "ai", "connect", NULL); break;
+    case A_AI_CHECK: run_cli("stategate ai check", 0, "ai", "check", NULL); break;
+    case A_AI_CONFIG:
+        run_cli("stategate mcp config", 0, "mcp", "config", NULL);
+        app.copy_on_finish = 1;
+        break;
     case A_GATE:
         if (!strcmp(app.st.current_status, "active")) run_cli("stategate ticket run", 0, "ticket", "run", NULL);
         else run_cli("stategate gate", 0, "gate", NULL, NULL);
@@ -1918,8 +1912,8 @@ static void handle_clicks(void) {
 
 static void handle_typing(void) {
     if (!app.focus) return;
-    char *buf = app.focus == 1 ? app.path_in : app.focus == 2 ? app.name_in : app.ai_in;
-    size_t cap = app.focus == 1 ? sizeof app.path_in : app.focus == 2 ? sizeof app.name_in : sizeof app.ai_in;
+    char *buf = app.focus == 1 ? app.path_in : app.name_in;
+    size_t cap = app.focus == 1 ? sizeof app.path_in : sizeof app.name_in;
     int c;
     while ((c = GetCharPressed()) > 0) {
         size_t n = strlen(buf);
@@ -1932,7 +1926,7 @@ static void handle_typing(void) {
             if (*clip >= 32 && *clip < 127) { buf[n++] = *clip; buf[n] = 0; }
     }
     if ((IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && *buf) buf[strlen(buf) - 1] = 0;
-    if (IsKeyPressed(KEY_ENTER)) dispatch(app.focus == 1 ? A_GO_PATH : app.focus == 2 ? A_CREATE : A_AI_SAVE, 0);
+    if (IsKeyPressed(KEY_ENTER)) dispatch(app.focus == 1 ? A_GO_PATH : A_CREATE, 0);
 }
 
 static void clay_error(Clay_ErrorData e) { fprintf(stderr, "clay: %.*s\n", e.errorText.length, e.errorText.chars); }

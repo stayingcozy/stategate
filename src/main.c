@@ -2,6 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "ai.h"
 #include "gate.h"
 #include "mcp.h"
 #include "ticket.h"
@@ -22,7 +23,9 @@ static int usage(void) {
             "                     start [<id>] | prompt [<id> | --drafts] | run | next | done <id>\n"
             "                     split <id> \"title\" \"title\" ...   (start and split: architect only)\n"
             "  export mermaid     print the machine as a Mermaid state diagram\n"
-            "  mcp                serve the AI steps as MCP tools over stdin/stdout\n");
+            "  mcp                serve the AI steps as MCP tools over stdin/stdout\n"
+            "  mcp config         the MCP server entry for this project, as JSON for any MCP client\n"
+            "  ai ...             fill | work | connect | check: Claude Code over the stategate MCP server\n");
     return 2;
 }
 
@@ -46,6 +49,8 @@ int main(int argc, char **argv) {
 
     StrList errors = {0};
     char *found = NULL;
+    if (!strcmp(cmd, "mcp") && i < argc && !strcmp(argv[i], "config")) return cmd_mcp_config(argv[0]);
+    if (!strcmp(cmd, "ai")) return cmd_ai(argc - i, argv + i, argv[0]);
     if (!strcmp(cmd, "ticket")) {
         /* list, done and split work without a model; new, check and start need it. */
         if (!model) model = model_find(".", &errors);
