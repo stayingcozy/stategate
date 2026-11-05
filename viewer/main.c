@@ -82,8 +82,7 @@ typedef struct {
 
 typedef enum { SCREEN_HOME, SCREEN_PROJECT } Screen;
 
-/* How the AI buttons reach your AI. */
-enum { AI_MCP, AI_COPY };
+
 
 typedef struct {
     Screen screen;
@@ -107,7 +106,6 @@ typedef struct {
     float ui_mult;   /* the person's Ctrl +/- factor on top */
 
     /* Your AI: a command the prompt is piped into, or empty to copy it. */
-    int ai_mode;         /* AI_MCP or AI_COPY */
     int have_claude;     /* `claude` is on PATH */
     int copy_on_finish;  /* put the finished job's output on the clipboard */
     int ai_loop;         /* implementing: run the AI again for each next ticket */
@@ -616,7 +614,7 @@ static Clay_ElementDeclaration card(void) {
 typedef enum {
     A_NONE, A_EVENT, A_RESET,
     A_HOME, A_INIT, A_STEP_BACK, A_STEP_FWD, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
-    A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_MODE, A_AI_CONNECT, A_AI_CHECK, A_AI_CONFIG,
+    A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_CONNECT, A_AI_CHECK, A_AI_CONFIG,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP, A_TICKET_PREV, A_TICKET_NEXT,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
 } UiAction;
@@ -684,44 +682,17 @@ static void run_shell(const char *title, const char *script) {
 
 /* ---- your AI ---- */
 
-static char *ai_mode_path(void) {
-    static char p[PATH_MAX];
-    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
-    if (xdg && *xdg) snprintf(p, sizeof p, "%s/stategate/ai_mode", xdg);
-    else snprintf(p, sizeof p, "%s/.config/stategate/ai_mode", home ? home : ".");
-    return p;
-}
-
-/* Claude Code over MCP when it is installed, unless copying was chosen. */
 static void ai_load(void) {
     int st;
     free(run_capture("command -v claude >/dev/null 2>&1", &st));
     app.have_claude = st == 0;
-    char *mode = read_file(ai_mode_path(), NULL);
-    if (mode && !strncmp(mode, "copy", 4)) app.ai_mode = AI_COPY;
-    else if (mode && !strncmp(mode, "mcp", 3)) app.ai_mode = AI_MCP;
-    else app.ai_mode = app.have_claude ? AI_MCP : AI_COPY;
-    free(mode);
 }
 
-static void ai_mode_save(int mode) {
-    app.ai_mode = mode;
-    const char *name = mode == AI_COPY ? "copy\n" : "mcp\n";
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof dir, "%s", ai_mode_path());
-    *strrchr(dir, '/') = 0;
-    mkdirs(dir);
-    write_file(ai_mode_path(), name, strlen(name));
-}
-
-/* The AI buttons copy the prompt instead of running anything. */
-static int ai_copies(void) { return app.ai_mode == AI_COPY; }
-
-/* An AI step: Claude Code with only the stategate MCP tools, or the prompt
- * on the clipboard to paste into any AI. */
-static void run_ai(int drafts) {
+/* An AI step: an MCP server request (Claude Code with only the stategate
+ * MCP tools), or the prompt on the clipboard to paste into any AI. */
+static void run_ai(int drafts, int copy) {
     if (app.job.running) return;
-    if (ai_copies()) {
+    if (copy) {
         if (drafts) run_cli("stategate ticket prompt --drafts", 0, "ticket", "prompt", "--drafts");
         else run_cli("stategate ticket prompt", 0, "ticket", "prompt", NULL);
         app.copy_on_finish = 1;
@@ -754,7 +725,7 @@ static void job_finished(void) {
     if (!strcmp(app.st.current_status, "active") && strcmp(app.st.current, app.ai_ticket)) {
         char prev[64];
         snprintf(prev, sizeof prev, "%s", app.ai_ticket);
-        run_ai(0);
+        run_ai(0, 0);
         snprintf(app.job_note, sizeof app.job_note, "%s is done; now %s.", prev, app.st.current);
     } else if (!strcmp(app.st.current_status, "active")) {
         snprintf(app.job_note, sizeof app.job_note, "%s is still active: the gate is not green yet. See the gate below.", app.ai_ticket);
@@ -1089,7 +1060,7 @@ static void steps_card_body(void) {
         break;
     case ST_IMPLEMENT:
         detail = *s->current ? TextFormat("active: %s (%s), %d approved after it. %s", s->current, s->current_status, s->t_approved,
-                                          !ai_copies() ? "Your AI works each ticket until green." : "Paste the prompt into your AI.")
+                                          "An MCP server request works each ticket until green.")
                  : s->t_approved ? TextFormat("%d approved, waiting", s->t_approved) : "needs an approved ticket";
         break;
     case ST_GATE:
@@ -1122,12 +1093,16 @@ static void steps_card_body(void) {
             break;
         case ST_TICKETS:
             button("Draft tickets", A_TICKET_GEN, 0, !busy && s->generated && s->init, is_next && !s->t_draft);
-            button(!ai_copies() ? "Fill with AI" : "Copy AI prompt", A_AI_FILL, 0, !busy && s->t_draft > 0, is_next && s->t_draft);
+            button("MCP Server Request", A_AI_FILL, 0, !busy && s->t_draft > 0 && app.have_claude, is_next && s->t_draft && app.have_claude);
+            button("Copy Prompt", A_AI_FILL, 1, !busy && s->t_draft > 0, is_next && s->t_draft && !app.have_claude);
             break;
         case ST_REVIEW: button("Start review", A_REVIEW, 0, !busy && s->t_open > 0 && saved, is_next); break;
         case ST_IMPLEMENT:
-            button(!ai_copies() ? "Implement with AI" : "Copy AI prompt", A_AI_IMPL, 0,
-                   !busy && !strcmp(s->current_status, "active"), is_next && !strcmp(s->current_status, "active"));
+        {
+            int active = !strcmp(s->current_status, "active");
+            button("MCP Server Request", A_AI_IMPL, 0, !busy && active && app.have_claude, is_next && active && app.have_claude);
+            button("Copy Prompt", A_AI_IMPL, 1, !busy && active, is_next && active && !app.have_claude);
+        }
             break;
         case ST_GATE: button("Run gate", A_GATE, 0, !busy && has_model, is_next); break;
         }
@@ -1353,27 +1328,19 @@ static void output_body(void) {
 
 static void text_field(int which, char *buf, const char *placeholder, float width);
 
-/* A choice among a few: the chosen one drawn as primary. */
-static void choice(const char *label, UiAction a, int arg, int chosen) { button(label, a, arg, 1, chosen); }
 
 static void ai_card(void) {
     CLAY(card()) {
         heading("YOUR AI");
-        CLAY_TEXT(cs("How Fill with AI and Implement with AI reach your AI:"), T(13, C_QUIET));
-        CLAY({.layout = {.childGap = PX(8)}}) {
-            choice("Claude Code (MCP)", A_AI_MODE, AI_MCP, app.ai_mode == AI_MCP);
-            choice("Copy the prompt", A_AI_MODE, AI_COPY, app.ai_mode == AI_COPY);
-        }
-        if (app.ai_mode == AI_MCP) {
-            if (!app.have_claude)
-                CLAY_TEXT(cs("claude is not on PATH. Install Claude Code, or copy the prompt instead."), T(14, C_AMBER));
-            CLAY_TEXT(cs("The buttons run Claude Code headless with only the stategate MCP tools: it reads the project, "
-                         "fills in tickets, writes the active ticket's files and runs the gate, and can do nothing else."),
-                      T(13, C_INK));
-            CLAY_TEXT(cs("$ stategate ai fill   /   $ stategate ai work"), T(13, C_QUIET));
-        } else {
-            CLAY_TEXT(cs("The buttons copy the prompt to the clipboard for you to paste into any AI."), T(13, C_INK));
-        }
+        CLAY_TEXT(cs("The AI steps (tickets and implementing) each have two buttons:"), T(13, C_QUIET));
+        CLAY_TEXT(cs("MCP Server Request runs Claude Code headless with only the stategate MCP tools: it reads the project, "
+                     "fills in tickets, writes the active ticket's files and runs the gate, and can do nothing else."),
+                  T(13, C_INK));
+        CLAY_TEXT(cs("$ stategate ai fill   /   $ stategate ai work"), T(13, C_QUIET));
+        if (!app.have_claude)
+            CLAY_TEXT(cs("claude is not on PATH: install Claude Code to use MCP Server Request."), T(14, C_AMBER));
+        CLAY_TEXT(cs("Copy Prompt puts the prompt on the clipboard for you to paste into any AI."), T(13, C_INK));
+        CLAY_TEXT(cs("$ stategate ticket prompt --drafts   /   $ stategate ticket prompt"), T(13, C_QUIET));
         CLAY_TEXT(cs("Any MCP client can use the same tools: connect your own Claude Code chat in this folder, or copy the "
                      "server entry into another client's MCP settings (Cursor, Claude Desktop, ...)."),
                   T(13, C_QUIET));
@@ -1871,9 +1838,8 @@ static void dispatch(UiAction a, int arg) {
         break;
     case A_TICKET_PREV: ticket_go(-1); break;
     case A_TICKET_NEXT: ticket_go(1); break;
-    case A_AI_FILL: run_ai(1); break;
-    case A_AI_IMPL: run_ai(0); break;
-    case A_AI_MODE: ai_mode_save(arg); break;
+    case A_AI_FILL: run_ai(1, arg); break;
+    case A_AI_IMPL: run_ai(0, arg); break;
     case A_AI_CONNECT: run_cli("stategate ai connect", 0, "ai", "connect", NULL); break;
     case A_AI_CHECK: run_cli("stategate ai check", 0, "ai", "check", NULL); break;
     case A_AI_CONFIG:

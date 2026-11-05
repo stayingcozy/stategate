@@ -161,29 +161,29 @@ prints its output, so everything the app does you can also do at a terminal:
 | Sign off | `stategate signoff`, in a dialog where you confirm |
 | Save to git | `git add -A && git commit` |
 | Draft tickets | `stategate ticket gen` |
-| Fill with AI | `stategate ai fill` (Claude Code over MCP), or copies `stategate ticket prompt --drafts` |
+| Tickets: MCP Server Request / Copy Prompt | `stategate ai fill` (Claude Code over MCP) / copies `stategate ticket prompt --drafts` |
 | Start review | `stategate ticket start`, answered in the ticket box: approve, skip or stop per ticket |
-| Implement with AI | `stategate ai work` (Claude Code over MCP), again for each next ticket, or copies `stategate ticket prompt` |
+| Implement: MCP Server Request / Copy Prompt | `stategate ai work` (Claude Code over MCP), again for each next ticket / copies `stategate ticket prompt` |
 | Run gate | `stategate ticket run` while a ticket is active, else `stategate gate` |
 
-Filling in drafts and writing node logic are your AI's steps. **Your AI**
-picks how the two AI buttons reach it (saved in `~/.config/stategate/ai_mode`):
+Filling in drafts and writing node logic are your AI's steps, and each of
+those two steps has two buttons (the **Your AI** box explains them):
 
-- **Claude Code (MCP)**, the default when `claude` is on PATH. The buttons run
-  `stategate ai fill` and `stategate ai work`: Claude Code headless with the
-  stategate MCP server and nothing else (no shell, no file tools), so it can
-  only fill tickets, write the active ticket's files and run the gate.
-- **Copy the prompt**: the buttons copy it for you to paste into any AI. The
-  prompt tells the AI to run `stategate ticket fill` for each draft and
-  `stategate ticket run` when a ticket's code is done.
+- **MCP Server Request** runs `stategate ai fill` or `stategate ai work`:
+  Claude Code headless with the stategate MCP server and nothing else (no
+  shell, no file tools), so it can only fill tickets, write the active
+  ticket's files and run the gate. It needs `claude` on PATH.
+- **Copy Prompt** copies the prompt for you to paste into any AI. The prompt
+  tells the AI to run `stategate ticket fill` for each draft and `stategate
+  ticket run` when a ticket's code is done.
 
-Either way, any MCP client can use the same tools. **Connect Claude Code**
+Any MCP client can use the same tools. **Connect Claude Code**
 runs `stategate ai connect` (`claude mcp add -s local stategate ...` for this
 folder) so your own Claude Code chat there has them, **Check** runs
 `stategate ai check` (`claude mcp get stategate`), and **Copy MCP config**
 copies `stategate mcp config` for any other client (Cursor, Claude Desktop, ...).
 
-Implement with AI goes on to the next ticket each time one turns green, and
+MCP Server Request on the implement step goes on to the next ticket each time one turns green, and
 stops when a ticket stays red, locks, or the queue is empty.
 Approving tickets and signing off stay with you: they need a terminal, which
 the AI's commands don't have. The confirmations run the real command on a
