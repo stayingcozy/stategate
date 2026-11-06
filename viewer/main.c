@@ -5,7 +5,9 @@
  * saved layout. Right third (Clay): the steps of the flow, each a button
  * that runs the same `stategate` CLI command a person would type, the
  * command's output, the last gate result, a simulator and the step ladder.
- * The model itself is edited by hand; the canvas reloads when it changes.
+ * The canvas is also an editor: states, transitions and labels drawn there
+ * are written straight back to the model's YAML (src/medit.c), which stays
+ * the source of truth; the canvas reloads whenever the file changes.
  * Step states come from `stategate status --json`, gate results from
  * .fsm/gate.json: the app keeps no status of its own. */
 
@@ -13,6 +15,7 @@
 #include "third_party/clay/clay.h"
 #include "third_party/clay/clay_renderer_raylib.c"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,6 +29,7 @@
 #include "cJSON.h"
 #include "gate_status.h"
 #include "runner.h"
+#include "medit.h"
 #include "model.h"
 #include "validate.h"
 
@@ -115,8 +119,10 @@ typedef struct {
     char *model_path;
     SgModel model;
     int have_model;
+    int model_stale; /* the file does not parse: the canvas shows the last one that did */
     StrList model_errors;
-    time_t model_mtime, gate_mtime;
+    long long model_mtime; /* file_sig() of the model */
+    time_t gate_mtime;
     GateStatus gate;
 
     int cur;              /* active state index in the simulator */
@@ -151,6 +157,41 @@ typedef struct {
 
 static App app;
 
+/* ---- the canvas editor's state ---- */
+
+typedef enum { IN_NONE, IN_NAME, IN_LABEL } InlineKind;
+
+typedef struct {
+    char sel[128];                    /* the selected state's id, or "" */
+    char sel_from[128], sel_to[128];  /* the selected arrow, or "" */
+
+    /* The left button went down on the canvas: on a node (move it), on its
+     * dot (draw an arrow from it) or on empty space (pan). */
+    int pressed, press_node, moving, linking, panning;
+    Vector2 press_at, grab; /* grab: the mouse from the node's corner */
+    double last_click;
+    Vector2 last_at;
+
+    /* The text field over a node (its name) or an arrow (its events). */
+    InlineKind in;
+    char buf[256];
+    int fresh;                        /* the first key replaces the text */
+    int just_opened;                  /* the key that opened it is not typed */
+    char in_state[128];               /* IN_NAME */
+    char in_from[128], in_to[128];    /* IN_LABEL */
+    Rectangle in_box;                 /* where it was drawn last frame */
+
+    char msg[256];                    /* the last edit's problem, or a note */
+    char reveal[128];                 /* a state just made: bring it into view */
+    char anchor[128];                 /* a state that stays put on screen across an edit */
+    Vector2 anchor_at;
+    char mover[128];                  /* the state an edit moves: not the anchor */
+    char *undo[64];                   /* the model's text before each edit */
+    int n_undo;
+} Editor;
+
+static Editor E;
+
 /* Per-frame text arena: Clay keeps pointers to strings until render. */
 static char arena[1 << 16];
 static size_t arena_used;
@@ -179,6 +220,17 @@ static Clay_String csf(const char *fmt, ...) {
 static time_t mtime_of(const char *path) {
     struct stat st;
     return stat(path, &st) == 0 ? st.st_mtime : 0;
+}
+
+/* Changes with every write, even two in one second. */
+static long long file_sig(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+#ifdef __APPLE__
+    return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec + (long long)st.st_size * 7;
+#else
+    return (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec + (long long)st.st_size * 7;
+#endif
 }
 
 /* ---- model + simulator ---- */
@@ -213,6 +265,10 @@ static void sim_send(const char *event) {
         return;
     }
     int to = state_index(&app.model, target);
+    if (to < 0) {
+        snprintf(app.flash, sizeof app.flash, "%s goes to %s, which is not a state", s->name, target);
+        return;
+    }
     sl_pushf(&app.history, "%s --%s--> %s", s->name, event, app.model.states[to].name);
     if (app.history.n > 8) {
         free(app.history.v[0]);
@@ -234,14 +290,19 @@ static void load_model(int first) {
     if (!app.model_path) return;
     SgModel m;
     StrList errors = {0};
-    if (model_load(app.model_path, &m, &errors) == 0) {
+    int parsed = model_load(app.model_path, &m, &errors) == 0;
+    if (parsed) {
         check_statechart(&m, &errors);
         if (!errors.n) check_model_invariants(&m, &errors);
     }
     for (int i = 0; i < app.model_errors.n; i++) free(app.model_errors.v[i]);
     app.model_errors.n = 0;
     for (int i = 0; i < errors.n; i++) sl_push(&app.model_errors, errors.v[i]);
-    if (errors.n && app.have_model) return; /* keep showing the last good model */
+    /* A model that parses is drawn even while it breaks a rule (a state
+     * just added is unreachable until an arrow reaches it); one that does
+     * not parse leaves the last one on the canvas. */
+    app.model_stale = !parsed && app.have_model;
+    if (!parsed && app.have_model) return;
 
     /* Keep the simulator where it was when the active state still exists. */
     char keep[256] = "";
@@ -260,6 +321,8 @@ static void tickets_poll(void);
 static long long tickets_signature(void);
 static void tickets_reload(int follow_changes);
 
+static void undo_clear(void);
+
 static void poll_files(void) {
     tickets_poll();
     if (!app.model_path) {
@@ -269,8 +332,15 @@ static void poll_files(void) {
         if (!app.model_path) return;
         app.model_mtime = 0;
     }
-    time_t mm = mtime_of(app.model_path), gm = mtime_of(".fsm/gate.json");
-    if (mm != app.model_mtime) { app.model_mtime = mm; load_model(0); }
+    long long mm = file_sig(app.model_path);
+    time_t gm = mtime_of(".fsm/gate.json");
+    if (mm != app.model_mtime) {
+        /* Someone else wrote the file (the canvas's own edits set the
+         * signature): undo would now overwrite their change. */
+        app.model_mtime = mm;
+        undo_clear();
+        load_model(0);
+    }
     if (gm != app.gate_mtime) { app.gate_mtime = gm; gate_status_load(&app.gate, ".fsm/gate.json"); }
 }
 
@@ -370,13 +440,16 @@ static void fit_view(void) {
     if (!app.have_model || !g.found || app.zoom <= 0) return;
     float w = g.boundingBox.width / app.zoom, h = g.boundingBox.height / app.zoom;
     float cw = canvas_width(), ch = (float)GetScreenHeight(), margin = 30.0f * app.ui;
+    /* The editor's toolbar sits over the top of the canvas: fit below it. */
+    Clay_ElementData bar = Clay_GetElementData(CLAY_ID("EditBar"));
+    float top = bar.found ? bar.boundingBox.y + bar.boundingBox.height : 0;
+    ch -= top;
     float zx = (cw - 2 * margin) / fmaxf(1.0f, w), zy = (ch - 2 * margin) / fmaxf(1.0f, h);
     /* Never shrink below readable text: a big machine in a small canvas
      * then overflows, and drag or scroll shows the rest. */
     app.zoom = fminf(2.0f, fmaxf(0.7f, fminf(zx, zy)));
     app.pan.x = fmaxf(0, (cw - w * app.zoom) / 2);
-    app.pan.y = (ch - h * app.zoom) / 2;
-    app.pan.y = fmaxf(0, app.pan.y);
+    app.pan.y = top + fmaxf(0, (ch - h * app.zoom) / 2);
 }
 
 static void text(const char *s, float x, float y, float size, Color c) {
@@ -407,30 +480,44 @@ static void arrow_head(Vector2 tip, Vector2 from, Color c) {
     DrawTriangle(tip, Vector2Subtract(b, Vector2Scale(n, W)), Vector2Add(b, Vector2Scale(n, W)), c);
 }
 
+/* Edge labels, drawn after the nodes. Their boxes stay until the next
+ * frame, so a click can find the arrow it is on. */
 typedef struct {
     char text[256];
     Vector2 at;
-    int hot;
+    int hot, sel;
+    int from, to;   /* state indexes */
+    Rectangle box;
 } PendingLabel;
 static PendingLabel labels[256];
 static int n_labels;
 
-static void edge_label(const char *label, Vector2 at, int hot) {
+static void edge_label(const char *label, Vector2 at, int hot, int from, int to, int sel) {
     if (n_labels < 256) {
-        snprintf(labels[n_labels].text, sizeof labels[n_labels].text, "%s", label);
-        labels[n_labels].at = at;
-        labels[n_labels].hot = hot;
-        n_labels++;
+        PendingLabel *l = &labels[n_labels++];
+        snprintf(l->text, sizeof l->text, "%s", label);
+        l->at = at;
+        l->hot = hot;
+        l->sel = sel;
+        l->from = from;
+        l->to = to;
+        l->box = (Rectangle){at.x, at.y, 0, 0};
     }
 }
 
-static void draw_label(const char *label, Vector2 at, int hot) {
+static void draw_label(PendingLabel *l) {
     float fs = 15.0f * app.ui * app.zoom;
     if (fs < 8) return;
-    Vector2 sz = text_size(label, fs);
+    Vector2 sz = text_size(l->text, fs), at = l->at;
     Rectangle bg = {at.x - sz.x / 2 - 4, at.y - sz.y / 2 - 2, sz.x + 8, sz.y + 4};
-    DrawRectangleRounded(bg, 0.4f, 4, hot ? ACCENT_SOFT : (Color){244, 244, 241, 235});
-    text(label, at.x - sz.x / 2, at.y - sz.y / 2, fs, hot ? ACCENT : QUIET);
+    l->box = bg;
+    DrawRectangleRounded(bg, 0.4f, 4, l->hot || l->sel ? ACCENT_SOFT : (Color){244, 244, 241, 235});
+    if (l->sel) DrawRectangleRoundedLinesEx(bg, 0.4f, 4, 1.5f, ACCENT);
+    text(l->text, at.x - sz.x / 2, at.y - sz.y / 2, fs, l->hot || l->sel ? ACCENT : QUIET);
+}
+
+static int edge_selected(const State *a, const State *b) {
+    return E.sel_from[0] && !strcmp(E.sel_from, a->id) && !strcmp(E.sel_to, b->id);
 }
 
 static void draw_edges(void) {
@@ -448,8 +535,9 @@ static void draw_edges(void) {
                 if (app.last_from == i && app.last_to == j && !strcmp(app.last_event, s->on[k].event)) hot = 1;
             }
             if (!*label) continue;
-            Color c = hot ? ACCENT : NODE_EDGE;
-            float thick = (hot ? 2.5f : 1.4f) * fmaxf(0.7f, app.zoom);
+            int sel = edge_selected(s, &m->states[j]);
+            Color c = hot || sel ? ACCENT : NODE_EDGE;
+            float thick = (hot || sel ? 2.5f : 1.4f) * fmaxf(0.7f, app.zoom);
             Rectangle a = node_rect(s), b = node_rect(&m->states[j]);
             if (i == j) {
                 /* Self-loop above the node. */
@@ -458,7 +546,7 @@ static void draw_edges(void) {
                 Vector2 c2 = {p1.x - 10 * app.zoom, a.y - h}, c3 = {p4.x + 10 * app.zoom, a.y - h};
                 DrawSplineSegmentBezierCubic(p1, c2, c3, p4, thick, c);
                 arrow_head(p4, c3, c);
-                edge_label(label, (Vector2){a.x + a.width / 2, a.y - h * 0.80f}, hot);
+                edge_label(label, (Vector2){a.x + a.width / 2, a.y - h * 0.80f}, hot, i, j, sel);
                 continue;
             }
             /* Offset both directions of a two-way pair so they don't overlap. */
@@ -481,7 +569,7 @@ static void draw_edges(void) {
             Vector2 ls = text_size(label, 15.0f * app.ui * app.zoom);
             float out = fabsf(n.x) * (ls.x / 2 + 8) + fabsf(n.y) * (ls.y / 2 + 4);
             Vector2 mid = Vector2Add(Vector2Lerp(p, q, 0.5f), Vector2Scale(n, reverse ? out : 0));
-            edge_label(label, mid, hot);
+            edge_label(label, mid, hot, i, j, sel);
         }
     }
 }
@@ -512,6 +600,10 @@ static void draw_nodes(void) {
         int active = i == app.cur;
         DrawRectangleRounded(r, 0.18f, 8, active ? ACCENT_SOFT : NODE_FILL);
         DrawRectangleRoundedLinesEx(r, 0.18f, 8, (active ? 2.5f : 1.2f) * fmaxf(0.7f, app.zoom), active ? ACCENT : NODE_EDGE);
+        if (!strcmp(E.sel, s->id)) {
+            Rectangle o = {r.x - 4, r.y - 4, r.width + 8, r.height + 8};
+            DrawRectangleRoundedLinesEx(o, 0.18f, 8, 2.0f, (Color){37, 99, 235, 150});
+        }
         if (s->initial) {
             Vector2 dot = {r.x - 30 * app.zoom, r.y + r.height / 2};
             DrawCircleV(dot, 5 * app.zoom, INK);
@@ -546,6 +638,8 @@ static void draw_nodes(void) {
     }
 }
 
+static void draw_editing(void);
+
 static void draw_canvas(void) {
     float cw = canvas_width(), ch = (float)GetScreenHeight();
     BeginScissorMode(0, 0, (int)cw, (int)ch);
@@ -559,23 +653,491 @@ static void draw_canvas(void) {
         draw_edges();
         draw_nodes();
         /* Labels last, so no node hides them. */
-        for (int i = 0; i < n_labels; i++) draw_label(labels[i].text, labels[i].at, labels[i].hot);
+        for (int i = 0; i < n_labels; i++) draw_label(&labels[i]);
+        draw_editing();
     } else {
         float u = app.ui;
         if (app.model_path) text("No valid model loaded yet. See the panel for errors.", 24 * u, 24 * u, 18 * u, QUIET);
         else if (!app.st.ok) text("No model in this folder yet.", 24 * u, 24 * u, 22 * u, INK);
         /* otherwise canvas_notice_card says what to do */
     }
-    text("drag to pan, scroll to zoom, F to fit, Ctrl +/- text size", 16 * app.ui, ch - 26 * app.ui, 14 * app.ui, QUIET);
+    text("drag empty space to pan, scroll to zoom, F to fit, Del deletes, Ctrl+Z undoes, Ctrl +/- text size", 16 * app.ui, ch - 26 * app.ui, 14 * app.ui, QUIET);
     EndScissorMode();
+}
+
+static void sl_clear(StrList *l);
+
+/* ---- the canvas editor ----
+ *
+ * Every edit reads the model file, changes its text with src/medit.c and
+ * writes it back; the canvas then reloads from the file like any change. */
+
+static void undo_clear(void) {
+    for (int i = 0; i < E.n_undo; i++) free(E.undo[i]);
+    E.n_undo = 0;
+}
+
+static char *edit_begin(void) {
+    if (!app.model_path) return NULL;
+    char *t = read_file(app.model_path, NULL);
+    if (!t) snprintf(E.msg, sizeof E.msg, "Cannot read %s.", app.model_path);
+    return t;
+}
+
+/* Writes `after` when the edit worked and changed something; `before`
+ * becomes the undo step. Takes both buffers. */
+static int edit_end(char *before, char *after, int rc, const char *err) {
+    if (rc != 0 || !after) {
+        snprintf(E.msg, sizeof E.msg, "%s", err && *err ? err : "That edit did not work.");
+        free(before);
+        free(after);
+        return -1;
+    }
+    E.msg[0] = 0;
+    if (!strcmp(before, after)) { free(before); free(after); return 0; }
+    if (write_file(app.model_path, after, strlen(after)) != 0) {
+        snprintf(E.msg, sizeof E.msg, "Cannot write %s.", app.model_path);
+        free(before);
+        free(after);
+        return -1;
+    }
+    if (E.n_undo == (int)(sizeof E.undo / sizeof E.undo[0])) {
+        free(E.undo[0]);
+        memmove(E.undo, E.undo + 1, sizeof E.undo[0] * (size_t)(E.n_undo - 1));
+        E.n_undo--;
+    }
+    E.undo[E.n_undo++] = before;
+    free(after);
+    /* A new first row or column moves the whole grid: keep one state where
+     * it was on screen so the view doesn't jump. */
+    E.anchor[0] = 0;
+    for (int i = 0; i < app.model.n_states; i++) {
+        if (!strcmp(app.model.states[i].id, E.mover)) continue;
+        Rectangle r = node_rect(&app.model.states[i]);
+        snprintf(E.anchor, sizeof E.anchor, "%s", app.model.states[i].id);
+        E.anchor_at = (Vector2){r.x, r.y};
+        break;
+    }
+    E.mover[0] = 0;
+    app.model_mtime = file_sig(app.model_path);
+    load_model(0);
+    return 0;
+}
+
+static void edit_undo(void) {
+    if (!E.n_undo || !app.model_path) return;
+    char *t = E.undo[--E.n_undo];
+    if (write_file(app.model_path, t, strlen(t)) == 0) {
+        app.model_mtime = file_sig(app.model_path);
+        load_model(0);
+        snprintf(E.msg, sizeof E.msg, "Undone.");
+    }
+    free(t);
+}
+
+static void select_none(void) { E.sel[0] = E.sel_from[0] = E.sel_to[0] = 0; }
+
+static void select_state(const char *id) {
+    select_none();
+    snprintf(E.sel, sizeof E.sel, "%s", id);
+}
+
+static void select_edge(const char *from, const char *to) {
+    select_none();
+    snprintf(E.sel_from, sizeof E.sel_from, "%s", from);
+    snprintf(E.sel_to, sizeof E.sel_to, "%s", to);
+}
+
+static int node_at(Vector2 p) {
+    for (int i = app.model.n_states - 1; i >= 0; i--)
+        if (CheckCollisionPointRec(p, node_rect(&app.model.states[i]))) return i;
+    return -1;
+}
+
+/* The dot on a node's right edge that arrows are drawn from. */
+static float dot_radius(void) { return fmaxf(5.0f, 6.5f * app.ui * fmaxf(0.7f, app.zoom)); }
+static Vector2 dot_pos(Rectangle r) { return (Vector2){r.x + r.width, r.y + r.height / 2}; }
+
+static int dot_at(Vector2 p) {
+    for (int i = app.model.n_states - 1; i >= 0; i--) {
+        Rectangle r = node_rect(&app.model.states[i]);
+        if (r.width > 0 && Vector2Distance(p, dot_pos(r)) <= dot_radius() + 4) return i;
+    }
+    return -1;
+}
+
+static int label_at(Vector2 p) {
+    for (int i = n_labels - 1; i >= 0; i--)
+        if (CheckCollisionPointRec(p, labels[i].box)) return i;
+    return -1;
+}
+
+/* The events on from -> to, as the label shows them: "A, B". */
+static void edge_events(const State *from, const char *to, char *out, size_t n) {
+    out[0] = 0;
+    for (int k = 0; k < from->n_on; k++) {
+        if (strcmp(from->on[k].target, to)) continue;
+        if (*out) strncat(out, ", ", n - strlen(out) - 1);
+        strncat(out, from->on[k].event, n - strlen(out) - 1);
+    }
+}
+
+/* Where a point falls on one axis of the grid, as a layout value: inside
+ * a column (row) it takes that column's x (y); in a gap it gets a value
+ * between its neighbours, and when they are too close for a new column to
+ * fit, the states after the gap move over. The saved layout only orders
+ * states (see grid_assign), so this is all a drop needs to say. */
+static double axis_place(int axis, float p, int mover, double *nv) {
+    const SgModel *m = &app.model;
+    int n = m->n_states < MAX_GRID ? m->n_states : MAX_GRID;
+    int kn = axis ? app.n_rows : app.n_cols;
+    double gap = axis ? 60 : 100, step = axis ? 200 : 300;
+    if (!n || !kn) return axis ? 120 : 80;
+    static double lo[MAX_GRID], hi[MAX_GRID];
+    static float a[MAX_GRID], b[MAX_GRID];
+    for (int k = 0; k < kn; k++) {
+        lo[k] = 1e18; hi[k] = -1e18;
+        Clay_ElementData d = Clay_GetElementData(CLAY_IDI("Cell", axis ? k : k * MAX_GRID));
+        if (!d.found) return axis ? m->states[0].y : m->states[0].x;
+        a[k] = axis ? d.boundingBox.y : d.boundingBox.x;
+        b[k] = a[k] + (axis ? d.boundingBox.height : d.boundingBox.width);
+    }
+    double own = mover >= 0 ? (axis ? m->states[mover].y : m->states[mover].x) : 0;
+    for (int i = 0; i < n; i++) {
+        if (i == mover) continue;
+        int k = axis ? app.row[i] : app.col[i];
+        double v = axis ? m->states[i].y : m->states[i].x;
+        lo[k] = fmin(lo[k], v);
+        hi[k] = fmax(hi[k], v);
+    }
+    for (int k = 0; k < kn; k++) if (lo[k] > hi[k]) lo[k] = hi[k] = own; /* only the mover was there */
+    for (int k = 0; k < kn; k++) {
+        if (p < a[k] || p > b[k]) continue;
+        if (mover >= 0 && (axis ? app.row[mover] : app.col[mover]) == k) return own;
+        return lo[k];
+    }
+    if (p < a[0]) return lo[0] - step;
+    if (p > b[kn - 1]) return hi[kn - 1] + step;
+    for (int k = 1; k < kn; k++) {
+        if (p <= b[k - 1] || p >= a[k]) continue;
+        double A = hi[k - 1], Bv = lo[k];
+        if (Bv - A > 2 * gap + 2) return floor((A + Bv) / 2);
+        for (int i = 0; i < n; i++)
+            if (i != mover && nv[i] >= Bv) nv[i] += step;
+        return A + step / 2;
+    }
+    return own;
+}
+
+/* The layout for a state dropped (or made) at p; states it pushes over
+ * are moved in the text too. */
+static int place_at(Vector2 p, int mover, double *x, double *y, char **t, char *err, size_t errn) {
+    const SgModel *m = &app.model;
+    int n = m->n_states < MAX_GRID ? m->n_states : MAX_GRID;
+    static double nx[MAX_GRID], ny[MAX_GRID];
+    for (int i = 0; i < n; i++) { nx[i] = m->states[i].x; ny[i] = m->states[i].y; }
+    *x = axis_place(0, p.x, mover, nx);
+    *y = axis_place(1, p.y, mover, ny);
+    for (int i = 0; i < n; i++) {
+        if (i == mover || (nx[i] == m->states[i].x && ny[i] == m->states[i].y)) continue;
+        if (me_set_layout(t, m->states[i].id, nx[i], ny[i], err, errn)) return -1;
+    }
+    return 0;
+}
+
+static void open_name_field(const char *id, int fresh) {
+    const State *s = model_state(&app.model, id);
+    if (!s) return;
+    E.in = IN_NAME;
+    E.just_opened = 1;
+    snprintf(E.in_state, sizeof E.in_state, "%s", id);
+    snprintf(E.buf, sizeof E.buf, "%s", s->name);
+    E.fresh = fresh;
+}
+
+static void open_label_field(const char *from, const char *to) {
+    const State *s = model_state(&app.model, from);
+    if (!s) return;
+    E.in = IN_LABEL;
+    E.just_opened = 1;
+    snprintf(E.in_from, sizeof E.in_from, "%s", from);
+    snprintf(E.in_to, sizeof E.in_to, "%s", to);
+    edge_events(s, to, E.buf, sizeof E.buf);
+    E.fresh = 0;
+    select_edge(from, to);
+}
+
+/* A name no state has yet: State1, State2, ... */
+static void free_name(char *out, size_t n) {
+    for (int k = 1; k < 10000; k++) {
+        snprintf(out, n, "State%d", k);
+        int used = 0;
+        for (int i = 0; i < app.model.n_states && !used; i++) used = !strcmp(app.model.states[i].name, out);
+        if (!used) return;
+    }
+}
+
+/* A new state at p (or, with at == NULL, right of the rightmost column).
+ * Fills id with its id; returns 0 on success. */
+static int ed_new_state(const Vector2 *at, char *id, size_t idn) {
+    char *t = edit_begin(), err[256] = "", name[32];
+    if (!t) return -1;
+    char *orig = xstrdup(t);
+    free_name(name, sizeof name);
+    double x = 80, y = 120;
+    int rc = 0;
+    if (at) rc = place_at(*at, -1, &x, &y, &t, err, sizeof err);
+    else if (app.model.n_states) {
+        x = -1e18;
+        y = 1e18;
+        for (int i = 0; i < app.model.n_states; i++) {
+            x = fmax(x, app.model.states[i].x);
+            y = fmin(y, app.model.states[i].y);
+        }
+        x += 300;
+    }
+    if (!rc) rc = me_add_state(&t, name, x, y, err, sizeof err);
+    if (edit_end(orig, t, rc, err) != 0) return -1;
+    snprintf(id, idn, "%s.%s", app.model.id, name);
+    select_state(id);
+    snprintf(E.reveal, sizeof E.reveal, "%s", id);
+    return 0;
+}
+
+static void ed_move(int i, Vector2 center) {
+    if (i < 0 || i >= app.model.n_states) return;
+    char *t = edit_begin(), err[256] = "";
+    if (!t) return;
+    char *orig = xstrdup(t), id[128];
+    snprintf(id, sizeof id, "%s", app.model.states[i].id);
+    snprintf(E.mover, sizeof E.mover, "%s", id);
+    double x, y;
+    int rc = place_at(center, i, &x, &y, &t, err, sizeof err);
+    if (!rc) rc = me_set_layout(&t, id, x, y, err, sizeof err);
+    edit_end(orig, t, rc, err);
+}
+
+static void ed_commit_name(void) {
+    E.in = IN_NONE;
+    char name[128];
+    size_t n = 0;
+    for (const char *p = E.buf; *p && n + 1 < sizeof name; p++)
+        if (isalnum((unsigned char)*p)) name[n++] = *p;
+    name[n] = 0;
+    if (n) name[0] = (char)toupper((unsigned char)name[0]);
+    const State *s = model_state(&app.model, E.in_state);
+    if (!s || !n || !strcmp(name, s->name)) return;
+    char *t = edit_begin(), err[256] = "";
+    if (!t) return;
+    char *orig = xstrdup(t), old[128];
+    snprintf(old, sizeof old, "%s", E.in_state);
+    int rc = me_rename_state(&t, old, name, err, sizeof err);
+    if (edit_end(orig, t, rc, err) == 0) {
+        char id[300];
+        snprintf(id, sizeof id, "%s.%s", app.model.id, name);
+        select_state(id);
+    } else {
+        open_name_field(old, 0); /* keep the field open on a bad name */
+        snprintf(E.buf, sizeof E.buf, "%s", name);
+    }
+}
+
+/* The label field holds the arrow's events, comma separated. Events taken
+ * out are removed from the arrow; new ones are added (a new event is
+ * declared, and every other state ignores it). */
+static void ed_commit_label(void) {
+    StrList want = {0};
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s", E.buf);
+    for (char *save = NULL, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ') tok++;
+        size_t n = strlen(tok);
+        while (n && tok[n - 1] == ' ') tok[--n] = 0;
+        for (char *c = tok; *c; c++) *c = *c == ' ' ? '_' : (char)toupper((unsigned char)*c);
+        if (!n) continue;
+        if (!me_is_event_name(tok)) {
+            snprintf(E.msg, sizeof E.msg, "%s is not an event name: use UPPER_SNAKE_CASE, like COIN or TIMER_DONE.", tok);
+            sl_clear(&want);
+            return; /* the field stays open */
+        }
+        if (!sl_contains(&want, tok)) sl_push(&want, tok);
+    }
+    E.in = IN_NONE;
+    const State *from = model_state(&app.model, E.in_from);
+    if (!from || !model_state(&app.model, E.in_to)) { sl_clear(&want); return; }
+    char from_id[128], to_id[128];
+    snprintf(from_id, sizeof from_id, "%s", E.in_from);
+    snprintf(to_id, sizeof to_id, "%s", E.in_to);
+    StrList had = {0};
+    for (int k = 0; k < from->n_on; k++)
+        if (!strcmp(from->on[k].target, to_id)) sl_push(&had, from->on[k].event);
+    char *t = edit_begin(), err[256] = "";
+    if (!t) { sl_clear(&want); sl_clear(&had); return; }
+    char *orig = xstrdup(t);
+    int rc = 0;
+    for (int i = 0; !rc && i < had.n; i++)
+        if (!sl_contains(&want, had.v[i])) rc = me_remove_transition(&t, from_id, had.v[i], err, sizeof err);
+    char moved[200] = "";
+    for (int i = 0; !rc && i < want.n; i++) {
+        const char *was = state_target(from, want.v[i]);
+        if (was && strcmp(was, to_id)) snprintf(moved, sizeof moved, "%s now goes here instead of to %s.", want.v[i], was);
+        rc = me_set_transition(&t, from_id, want.v[i], to_id, err, sizeof err);
+    }
+    if (edit_end(orig, t, rc, err) == 0 && *moved) snprintf(E.msg, sizeof E.msg, "%s", moved);
+    if (want.n) select_edge(from_id, to_id);
+    else select_none();
+    sl_clear(&want);
+    sl_clear(&had);
+}
+
+static void ed_commit_field(void) {
+    if (E.in == IN_NAME) ed_commit_name();
+    else if (E.in == IN_LABEL) ed_commit_label();
+}
+
+static void ed_delete(void) {
+    char *t = edit_begin(), err[256] = "";
+    if (!t) return;
+    char *orig = xstrdup(t);
+    int rc = 0;
+    if (E.sel[0]) {
+        rc = me_delete_state(&t, E.sel, err, sizeof err);
+    } else if (E.sel_from[0]) {
+        const State *from = model_state(&app.model, E.sel_from);
+        StrList evs = {0};
+        for (int k = 0; from && k < from->n_on; k++)
+            if (!strcmp(from->on[k].target, E.sel_to)) sl_push(&evs, from->on[k].event);
+        for (int i = 0; !rc && i < evs.n; i++) rc = me_remove_transition(&t, E.sel_from, evs.v[i], err, sizeof err);
+        sl_clear(&evs);
+    } else {
+        free(orig);
+        free(t);
+        return;
+    }
+    if (edit_end(orig, t, rc, err) == 0) select_none();
+}
+
+static void ed_make_initial(void) {
+    if (!E.sel[0]) return;
+    char *t = edit_begin(), err[256] = "";
+    if (!t) return;
+    char *orig = xstrdup(t);
+    int rc = me_set_initial(&t, E.sel, err, sizeof err);
+    edit_end(orig, t, rc, err);
+}
+
+static void ed_rename_selection(void) {
+    if (E.sel[0]) open_name_field(E.sel, 0);
+    else if (E.sel_from[0]) open_label_field(E.sel_from, E.sel_to);
+}
+
+/* A new model: the black dot and one state that loops back on itself. */
+static void new_model(void) {
+    if (app.model_path) return;
+    const char *base = strrchr(app.project, '/') ? strrchr(app.project, '/') + 1 : app.project;
+    char mid[64];
+    size_t n = 0;
+    for (const char *p = base; *p && n + 1 < sizeof mid; p++) {
+        char c = (char)tolower((unsigned char)*p);
+        if (!isalnum((unsigned char)c)) c = '_';
+        if (c == '_' && (n == 0 || mid[n - 1] == '_')) continue;
+        if (n == 0 && isdigit((unsigned char)c)) mid[n++] = 'm';
+        mid[n++] = c;
+    }
+    while (n && mid[n - 1] == '_') n--;
+    mid[n] = 0;
+    if (!n) snprintf(mid, sizeof mid, "machine");
+    char path[128];
+    snprintf(path, sizeof path, "%s.yaml", mid);
+    if (file_exists(path)) { snprintf(E.msg, sizeof E.msg, "%s is already there.", path); return; }
+    char *t = me_new_model(mid);
+    int rc = write_file(path, t, strlen(t));
+    free(t);
+    if (rc != 0) { snprintf(app.flash, sizeof app.flash, "cannot write %s", path); return; }
+    app.model_path = xstrdup(path);
+    app.model_mtime = file_sig(path);
+    undo_clear();
+    load_model(1);
+    select_none();
+}
+
+/* Left button on the canvas: select, move, link, pan, double-click. */
+static void edit_mouse(Vector2 mouse, int can_press) {
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && can_press) {
+        double now = GetTime();
+        int dbl = now - E.last_click < 0.4 && Vector2Distance(mouse, E.last_at) < 8;
+        E.last_click = dbl ? 0 : now;
+        E.last_at = mouse;
+        if (E.in) {
+            if (CheckCollisionPointRec(mouse, E.in_box)) return;
+            ed_commit_field(); /* clicking elsewhere keeps what was typed */
+            if (E.in) return;  /* it was not a valid name */
+        }
+        E.pressed = 1;
+        E.press_at = mouse;
+        E.press_node = -1;
+        E.moving = E.linking = E.panning = 0;
+        if (!app.have_model) { E.panning = 1; return; }
+        int dot = dot_at(mouse), nd = node_at(mouse), lb = label_at(mouse);
+        if (dot >= 0 && !dbl) {
+            E.press_node = dot;
+            E.linking = 1;
+            select_state(app.model.states[dot].id);
+        } else if (nd >= 0) {
+            select_state(app.model.states[nd].id);
+            if (dbl) { open_name_field(app.model.states[nd].id, 0); E.pressed = 0; return; }
+            Rectangle r = node_rect(&app.model.states[nd]);
+            E.press_node = nd;
+            E.grab = (Vector2){mouse.x - r.x, mouse.y - r.y};
+        } else if (lb >= 0 && labels[lb].from < app.model.n_states && labels[lb].to < app.model.n_states) {
+            const char *f = app.model.states[labels[lb].from].id, *to = app.model.states[labels[lb].to].id;
+            select_edge(f, to);
+            if (dbl) { open_label_field(f, to); E.pressed = 0; }
+        } else {
+            select_none();
+            if (dbl) {
+                char id[300];
+                if (ed_new_state(&mouse, id, sizeof id) == 0) open_name_field(id, 1);
+                E.pressed = 0;
+                return;
+            }
+            E.panning = 1;
+        }
+    }
+    if (!E.pressed) return;
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        if (E.press_node >= 0 && !E.linking && !E.moving && Vector2Distance(mouse, E.press_at) > 5) E.moving = 1;
+        return;
+    }
+    /* released */
+    int from = E.press_node;
+    if (E.moving && from >= 0 && from < app.model.n_states) {
+        Rectangle r = node_rect(&app.model.states[from]);
+        ed_move(from, (Vector2){mouse.x - E.grab.x + r.width / 2, mouse.y - E.grab.y + r.height / 2});
+    } else if (E.linking && from >= 0 && from < app.model.n_states && Vector2Distance(mouse, E.press_at) > 5) {
+        char from_id[128];
+        snprintf(from_id, sizeof from_id, "%s", app.model.states[from].id);
+        int to = node_at(mouse);
+        if (to >= 0) open_label_field(from_id, app.model.states[to].id);
+        else if (mouse.x < canvas_width()) {
+            /* Dropped on empty space: a new state there, with the arrow to it. */
+            char id[300];
+            if (ed_new_state(&mouse, id, sizeof id) == 0) open_label_field(from_id, id);
+        }
+    }
+    E.pressed = E.moving = E.linking = E.panning = 0;
+    E.press_node = -1;
 }
 
 static void handle_canvas_input(void) {
     Vector2 mouse = GetMousePosition();
-    if (mouse.x > canvas_width()) return;
-    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) || IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE))
+    int in_canvas = mouse.x <= canvas_width();
+    int over_bar = Clay_PointerOver(CLAY_ID("EditBar")) || Clay_PointerOver(CLAY_ID("Notice"));
+    edit_mouse(mouse, in_canvas && !over_bar);
+    if (!in_canvas && !E.pressed) return;
+    if ((E.panning && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) || IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE))
         app.pan = Vector2Add(app.pan, GetMouseDelta());
-    float wheel = GetMouseWheelMove();
+    float wheel = in_canvas ? GetMouseWheelMove() : 0;
     if (wheel != 0) {
         float old = app.zoom;
         app.zoom = fminf(3.0f, fmaxf(0.25f, app.zoom * (1.0f + wheel * 0.1f)));
@@ -583,9 +1145,110 @@ static void handle_canvas_input(void) {
         app.pan.x = mouse.x - (mouse.x - app.pan.x) * (app.zoom / old);
         app.pan.y = mouse.y - (mouse.y - app.pan.y) * (app.zoom / old);
     }
-    if (IsKeyPressed(KEY_F) && !app.focus) app.fit_pending = 1;
+    if (app.focus || E.in) return; /* keys go to the text field */
+    int ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+    if (IsKeyPressed(KEY_F) && !ctrl) app.fit_pending = 1;
+    if (!app.have_model) return;
+    if (ctrl && IsKeyPressed(KEY_Z)) edit_undo();
+    if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE)) ed_delete();
+    if (IsKeyPressed(KEY_F2) || IsKeyPressed(KEY_ENTER)) ed_rename_selection();
+    if (IsKeyPressed(KEY_ESCAPE)) select_none();
 }
 
+/* Typing into the canvas's text field. */
+static void edit_typing(void) {
+    int c;
+    while ((c = GetCharPressed()) > 0) {
+        int ok = E.in == IN_NAME ? isalnum(c) : (isalnum(c) || c == '_' || c == ',' || c == ' ');
+        if (!ok || c >= 127) continue;
+        if (E.fresh) { E.buf[0] = 0; E.fresh = 0; }
+        size_t n = strlen(E.buf);
+        if (E.in == IN_LABEL) c = toupper(c);
+        if (n + 1 < sizeof E.buf) { E.buf[n] = (char)c; E.buf[n + 1] = 0; }
+    }
+    if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        if (E.fresh) { E.buf[0] = 0; E.fresh = 0; }
+        else if (*E.buf) E.buf[strlen(E.buf) - 1] = 0;
+    }
+    if (E.just_opened) E.just_opened = 0;
+    else if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) ed_commit_field();
+    else if (IsKeyPressed(KEY_ESCAPE)) { E.in = IN_NONE; E.msg[0] = 0; }
+}
+
+/* What the editor draws over the machine: the dot to draw arrows from,
+ * the node being moved, the arrow being drawn and the text field. */
+static void draw_editing(void) {
+    if (!app.have_model) return;
+    const SgModel *m = &app.model;
+    Vector2 mouse = GetMousePosition();
+    float z = fmaxf(0.7f, app.zoom), u = app.ui * app.zoom;
+    int hover = mouse.x <= canvas_width() ? node_at(mouse) : -1, dhover = mouse.x <= canvas_width() ? dot_at(mouse) : -1;
+    for (int i = 0; i < m->n_states; i++) {
+        int sel = !strcmp(E.sel, m->states[i].id);
+        if (i != hover && i != dhover && !sel && !(E.linking && i == E.press_node)) continue;
+        Rectangle r = node_rect(&m->states[i]);
+        Vector2 d = dot_pos(r);
+        DrawCircleV(d, dot_radius(), i == dhover ? ACCENT : NODE_FILL);
+        DrawCircleLinesV(d, dot_radius(), ACCENT);
+    }
+    if (E.moving && E.press_node >= 0 && E.press_node < m->n_states) {
+        Rectangle r = node_rect(&m->states[E.press_node]);
+        Rectangle g = {mouse.x - E.grab.x, mouse.y - E.grab.y, r.width, r.height};
+        DrawRectangleRounded(g, 0.18f, 8, (Color){219, 231, 253, 160});
+        DrawRectangleRoundedLinesEx(g, 0.18f, 8, 1.5f * z, ACCENT);
+    }
+    if (E.linking && E.press_node >= 0 && E.press_node < m->n_states && Vector2Distance(mouse, E.press_at) > 5) {
+        Vector2 a = dot_pos(node_rect(&m->states[E.press_node])), b = mouse;
+        int to = node_at(mouse);
+        if (to >= 0) {
+            Rectangle tr = node_rect(&m->states[to]);
+            DrawRectangleRoundedLinesEx((Rectangle){tr.x - 4, tr.y - 4, tr.width + 8, tr.height + 8}, 0.18f, 8, 2.0f, ACCENT);
+            if (to != E.press_node) b = rect_exit(tr, a);
+        }
+        DrawLineEx(a, b, 2.0f * z, ACCENT);
+        if (Vector2Distance(a, b) > 12) arrow_head(b, a, ACCENT);
+    }
+    if (!E.in) { E.in_box = (Rectangle){0}; return; }
+    /* The text field, over the name or on the arrow. */
+    float fs = fmaxf(12.0f, (E.in == IN_NAME ? 20.0f : 15.0f) * u);
+    Vector2 ts = text_size(E.buf, fs);
+    Rectangle box;
+    if (E.in == IN_NAME) {
+        const State *s = model_state(m, E.in_state);
+        if (!s) { E.in = IN_NONE; return; }
+        Rectangle r = node_rect(s);
+        box = (Rectangle){r.x + 4, r.y + 4, fmaxf(r.width - 8, ts.x + 20), fs + 12};
+    } else {
+        const State *a = model_state(m, E.in_from), *b = model_state(m, E.in_to);
+        if (!a || !b) { E.in = IN_NONE; return; }
+        Vector2 at = {0, 0};
+        int found = 0;
+        for (int i = 0; i < n_labels; i++) {
+            if (labels[i].from == (int)(a - m->states) && labels[i].to == (int)(b - m->states)) { at = labels[i].at; found = 1; }
+        }
+        Rectangle ra = node_rect(a), rb = node_rect(b);
+        if (!found && a == b) at = (Vector2){ra.x + ra.width / 2, ra.y - 37.0f * app.zoom};
+        else if (!found) {
+            /* No arrow yet: show where it will go. */
+            Vector2 p = rect_exit(ra, rect_center(rb)), q = rect_exit(rb, rect_center(ra));
+            DrawLineEx(p, q, 1.6f * z, (Color){37, 99, 235, 140});
+            arrow_head(q, p, (Color){37, 99, 235, 140});
+            at = Vector2Lerp(p, q, 0.5f);
+        }
+        float w = fmaxf(ts.x + 20, 150.0f * app.ui);
+        box = (Rectangle){at.x - w / 2, at.y - (fs + 12) / 2, w, fs + 12};
+    }
+    E.in_box = box;
+    DrawRectangleRounded(box, 0.25f, 6, NODE_FILL);
+    DrawRectangleRoundedLinesEx(box, 0.25f, 6, 2.0f, ACCENT);
+    float tx = box.x + 8, ty = box.y + (box.height - ts.y) / 2;
+    if (!*E.buf && E.in == IN_LABEL) text("EVENT_NAME", tx, ty, fs, (Color){170, 172, 178, 255});
+    text(E.buf, tx, ty, fs, E.fresh ? ACCENT : INK);
+    if (((int)(GetTime() * 2)) % 2 == 0) {
+        float cx = tx + ts.x + 2;
+        DrawLineEx((Vector2){cx, ty}, (Vector2){cx, ty + ts.y}, 1.5f, INK);
+    }
+}
 
 /* ---- panel (Clay) ---- */
 
@@ -617,6 +1280,7 @@ typedef enum {
     A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_CONNECT, A_AI_CHECK, A_AI_CONFIG,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP, A_TICKET_PREV, A_TICKET_NEXT,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
+    A_NEW_MODEL, A_ED_NEW, A_ED_RENAME, A_ED_INITIAL, A_ED_DELETE, A_ED_UNDO,
 } UiAction;
 
 typedef struct {
@@ -990,7 +1654,7 @@ static void step_go(int delta) {
 }
 
 static const char *const STEP_TITLES[N_STEPS] = {
-    "Initialize the project", "Write the state machine (by hand)", "Validate", "Generate code and tests",
+    "Initialize the project", "Draw the state machine", "Validate", "Generate code and tests",
     "Sign off locked safety items", "Save to git", "Tickets: draft, AI fills in", "Review tickets: approve or skip",
     "AI writes node logic, ticket by ticket", "Run the 11 checks",
 };
@@ -1037,7 +1701,7 @@ static void steps_card_body(void) {
                            : "$ stategate init  (AGENTS.md, CLAUDE.md, CHANGELOG.md, pre-commit hook)";
         break;
     case ST_MODEL:
-        detail = !has_model ? "create the model .yaml in this folder with your editor; it appears on the left when saved"
+        detail = !has_model ? "start a new state machine and draw it on the canvas, or write the model .yaml in this folder with your editor"
                  : s->valid ? app.model_path : "the model has errors: see the box above the steps";
         break;
     case ST_VALIDATE: detail = "$ stategate validate"; break;
@@ -1082,7 +1746,10 @@ static void steps_card_body(void) {
     CLAY({.layout = {.childGap = PX(8), .padding = {PX(4), PX(4), PX(4), PX(4)}}}) {
         switch (k) {
         case ST_INIT: if (!initialized(s)) button("Initialize", A_INIT, 0, !busy, 1); break;
-        case ST_MODEL: if (has_model) button("Open in editor", A_EDIT, 0, 1, is_next); break;
+        case ST_MODEL:
+            if (has_model) button("Open in editor", A_EDIT, 0, 1, 0);
+            else button("New state machine", A_NEW_MODEL, 0, initialized(s), is_next);
+            break;
         case ST_VALIDATE: button("Validate", A_VALIDATE, 0, !busy && has_model, is_next); break;
         case ST_GEN: button("Generate", A_GEN, 0, !busy && s->valid, is_next); break;
         case ST_SIGNOFF:
@@ -1120,6 +1787,7 @@ static void canvas_notice_card(void) {
     CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .sizing = {.width = CLAY_SIZING_FIXED(fminf(PXF(560), canvas_width() * 0.8f))},
                      .padding = CLAY_PADDING_ALL(PX(22)), .childGap = PX(10)},
           .backgroundColor = C_CARD, .cornerRadius = CLAY_CORNER_RADIUS(PX(10)), .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
+          .id = CLAY_ID("Notice"),
           .floating = {.attachTo = CLAY_ATTACH_TO_PARENT, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_CENTER, .parent = CLAY_ATTACH_POINT_CENTER_CENTER}}}) {
         if (need_init) {
             CLAY_TEXT(cs("This folder is not set up for stategate yet"), T(20, C_INK));
@@ -1129,8 +1797,11 @@ static void canvas_notice_card(void) {
             button("Initialize", A_INIT, 0, !app.job.running, 1);
         } else {
             CLAY_TEXT(cs("No model in this folder yet"), T(20, C_INK));
-            CLAY_TEXT(csf("Write %s.yaml here with your editor (examples/posture/posture.yaml is a template). It appears here as soon as you save it.", name),
-                      T(14, C_QUIET));
+            CLAY_TEXT(cs("Start one here: the black dot and one state that loops back on itself. Then draw the rest on the canvas; "
+                         "every change is saved to the model's YAML."), T(14, C_QUIET));
+            button("New state machine", A_NEW_MODEL, 0, 1, 1);
+            CLAY_TEXT(csf("Or write %s.yaml here with your editor (examples/posture/posture.yaml is a template): it appears as soon as you save it.", name),
+                      T(13, C_QUIET));
         }
     }
 }
@@ -1463,7 +2134,7 @@ static void ladder_card(void) {
 static void errors_card(void) {
     if (!app.model_errors.n) return;
     CLAY(card()) {
-        heading(app.have_model ? "MODEL ERRORS  (showing the last valid model)" : "MODEL ERRORS");
+        heading(app.have_model && app.model_stale ? "MODEL ERRORS  (showing the last model that parsed)" : "MODEL ERRORS");
         for (int i = 0; i < app.model_errors.n && i < 12; i++) CLAY_TEXT(cs(app.model_errors.v[i]), T(13, C_RED));
     }
 }
@@ -1559,7 +2230,8 @@ static void canvas_grid(void) {
         for (int c = 0; c < app.n_cols; c++) {
             CLAY({.layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = rowgap}}) {
                 for (int r = 0; r < app.n_rows; r++) {
-                    CLAY({.layout = {.sizing = {CLAY_SIZING_FIXED(colw[c] * app.zoom), CLAY_SIZING_FIXED(rowh[r] * app.zoom)},
+                    CLAY({.id = CLAY_IDI("Cell", c * MAX_GRID + r),
+                          .layout = {.sizing = {CLAY_SIZING_FIXED(colw[c] * app.zoom), CLAY_SIZING_FIXED(rowh[r] * app.zoom)},
                                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}}}) {
                         for (int i = 0; i < n; i++) {
                             if (app.col[i] != c || app.row[i] != r) continue;
@@ -1574,11 +2246,40 @@ static void canvas_grid(void) {
     }
 }
 
+/* The editor's toolbar, over the canvas's top-left corner. */
+static void edit_bar(void) {
+    if (!app.have_model) return;
+    int st = E.sel[0] ? state_index(&app.model, E.sel) : -1;
+    int edge = E.sel_from[0] && model_state(&app.model, E.sel_from) && model_state(&app.model, E.sel_to);
+    CLAY({.id = CLAY_ID("EditBar"),
+          .layout = {.layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(PX(8)), .childGap = PX(6),
+                     .sizing = {.width = CLAY_SIZING_FIT(0, canvas_width() - PXF(24))}},
+          .backgroundColor = {255, 255, 255, 235},
+          .cornerRadius = CLAY_CORNER_RADIUS(PX(8)),
+          .border = {.color = C_RULE, .width = {1, 1, 1, 1, 0}},
+          .floating = {.attachTo = CLAY_ATTACH_TO_PARENT, .offset = {PXF(12), PXF(12)}, .zIndex = 5}}) {
+        CLAY({.layout = {.childGap = PX(6), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+            button("New state", A_ED_NEW, 0, 1, 0);
+            button("Rename", A_ED_RENAME, 0, st >= 0 || edge, 0);
+            button("Make initial", A_ED_INITIAL, 0, st >= 0 && !app.model.states[st].initial, 0);
+            button("Delete", A_ED_DELETE, 0, st >= 0 || edge, 0);
+            button("Undo", A_ED_UNDO, 0, E.n_undo > 0, 0);
+        }
+        if (E.msg[0]) CLAY_TEXT(cs(E.msg), T(13, C_AMBER));
+        else if (E.in == IN_LABEL) CLAY_TEXT(cs("Type the event (UPPER_SNAKE_CASE; commas for more than one), then Enter. Esc cancels."), T(13, C_QUIET));
+        else if (E.in == IN_NAME) CLAY_TEXT(cs("Type the state's name (CamelCase), then Enter. Esc cancels."), T(13, C_QUIET));
+        else if (st >= 0) CLAY_TEXT(csf("%s: drag it to move, drag its dot to another state for a transition (back onto itself for a loop).", app.model.states[st].name), T(13, C_QUIET));
+        else if (edge) CLAY_TEXT(cs("Double-click the label to change its events. Delete removes the transition."), T(13, C_QUIET));
+        else CLAY_TEXT(cs("Double-click empty space for a state, or a name or label to rename it. Every edit is saved to the YAML."), T(13, C_QUIET));
+    }
+}
+
 static Clay_RenderCommandArray build_project(void) {
     Clay_BeginLayout();
     CLAY({.id = CLAY_ID("Root"), .layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}}}) {
         CLAY({.id = CLAY_ID("CanvasSpace"), .layout = {.sizing = {.width = CLAY_SIZING_FIXED(canvas_width()), .height = CLAY_SIZING_GROW(0)}}}) {
             canvas_grid();
+            edit_bar();
             canvas_notice_card();
         }
         CLAY({.id = CLAY_ID("Panel"),
@@ -1683,7 +2384,11 @@ static void open_project(const char *dir) {
     app.zoom = 1.0f;
     app.pan = (Vector2){0, 0};
     sim_reset();
-    app.model_mtime = app.model_path ? mtime_of(app.model_path) : 0;
+    app.model_mtime = app.model_path ? file_sig(app.model_path) : 0;
+    undo_clear();
+    select_none();
+    E.in = IN_NONE;
+    E.msg[0] = 0;
     load_model(1);
     gate_status_free(&app.gate);
     app.gate_mtime = mtime_of(".fsm/gate.json");
@@ -1890,6 +2595,17 @@ static void dispatch(UiAction a, int arg) {
         break;
     }
     case A_FOCUS: app.focus = arg; break;
+    case A_NEW_MODEL: new_model(); break;
+    case A_ED_NEW: {
+        if (E.in) ed_commit_field();
+        char id[300];
+        if (ed_new_state(NULL, id, sizeof id) == 0) open_name_field(id, 1);
+        break;
+    }
+    case A_ED_RENAME: ed_rename_selection(); break;
+    case A_ED_INITIAL: ed_make_initial(); break;
+    case A_ED_DELETE: ed_delete(); break;
+    case A_ED_UNDO: edit_undo(); break;
     }
 }
 
@@ -1911,6 +2627,7 @@ static void handle_clicks(void) {
 }
 
 static void handle_typing(void) {
+    if (app.screen == SCREEN_PROJECT && E.in) { edit_typing(); return; }
     if (!app.focus) return;
     char *buf = app.focus == 1 ? app.path_in : app.name_in;
     size_t cap = app.focus == 1 ? sizeof app.path_in : sizeof app.name_in;
@@ -2170,6 +2887,32 @@ int main(int argc, char **argv) {
             n_buttons = 0;
             button_seq = 0;
             cmds = build_project();
+        }
+        if (E.anchor[0] && app.screen == SCREEN_PROJECT) {
+            const State *s = app.have_model ? model_state(&app.model, E.anchor) : NULL;
+            Rectangle r = s ? node_rect(s) : (Rectangle){0};
+            if (s && r.width > 0 && (fabsf(r.x - E.anchor_at.x) > 0.5f || fabsf(r.y - E.anchor_at.y) > 0.5f)) {
+                app.pan.x += E.anchor_at.x - r.x;
+                app.pan.y += E.anchor_at.y - r.y;
+                arena_used = 0;
+                n_buttons = 0;
+                button_seq = 0;
+                cmds = build_project();
+            }
+            E.anchor[0] = 0;
+        }
+        if (E.reveal[0] && app.screen == SCREEN_PROJECT) {
+            /* A state made off screen: fit the machine so it shows. */
+            const State *s = app.have_model ? model_state(&app.model, E.reveal) : NULL;
+            Rectangle r = s ? node_rect(s) : (Rectangle){0};
+            if (s && (r.x < 0 || r.y < 0 || r.x + r.width > canvas_width() || r.y + r.height > GetScreenHeight())) {
+                fit_view();
+                arena_used = 0;
+                n_buttons = 0;
+                button_seq = 0;
+                cmds = build_project();
+            }
+            E.reveal[0] = 0;
         }
         handle_clicks();
 

@@ -155,7 +155,7 @@ prints its output, so everything the app does you can also do at a terminal:
 | Step | Button runs |
 |---|---|
 | Initialize | `git init` when there is no `.git`, then `stategate init` |
-| Write the state machine | opens the model in your default editor (`xdg-open`, `open` on macOS) |
+| Draw the state machine | **New state machine** writes `<folder>.yaml` with one state that loops back on itself; **Open in editor** opens the model in your default editor (`xdg-open`, `open` on macOS) |
 | Validate | `stategate validate` |
 | Generate | `stategate gen` |
 | Sign off | `stategate signoff`, in a dialog where you confirm |
@@ -204,11 +204,40 @@ Approve, Skip and Stop reviewing buttons in the box. `stategate ticket show
 Below that: the output of the last command, the last gate result from
 `.fsm/gate.json`, a simulator and the step ladder. Click an event to fire it:
 the active state lights up and the transition it took turns blue; ignored
-events say so. Drag to pan, scroll to zoom, F to fit. The panel scrolls with the wheel,
+events say so. Drag empty space to pan, scroll to zoom, F to fit. The panel scrolls with the wheel,
 its scrollbar, Page Up/Down and Home/End. Working through the Steps box
 leaves the panel where it is (the output lands just below it); there is no
-Quit button, close the window to exit. The machine itself stays
-YAML you write by hand.
+Quit button, close the window to exit.
+
+### Drawing the machine
+
+The canvas is an editor too, and the YAML stays the source of truth: every
+edit on the canvas is written straight back to the model file, changing only
+the lines it has to (comments, key order and `[flow]` or block style are
+kept), and an edit in your text editor shows on the canvas as soon as you
+save. A folder with no model shows **New state machine**: the black dot and
+one state that loops back on itself, written to `<folder>.yaml`.
+
+| To | Do |
+|---|---|
+| add a state | double-click empty space, or **New state**; type its name, Enter |
+| move a state | drag it; drop it in a gap for a new row or column |
+| add a transition | drag the dot on a state's right edge onto another state (back onto itself for a loop, onto empty space for a new state), type the event, Enter |
+| rename | double-click a state's name or an arrow's label, or select it and press Enter or **Rename** |
+| change an arrow's events | double-click its label: it holds every event on that arrow, comma separated |
+| make a state initial | select it, **Make initial** |
+| delete | select a state or an arrow, press Delete or **Delete** |
+| undo | Ctrl+Z or **Undo** |
+
+The edits keep the model total: a new event is declared under `events` and
+every other state ignores it until you draw a transition for it there, a
+removed transition's event becomes ignored by its state, and an event no
+state, timer, service or invariant uses any more leaves the model. Renaming
+a state renames its id everywhere it is referenced. A new state is
+unreachable until an arrow reaches it, so the panel lists that error while
+the canvas still draws it. The layout written back is the same `layout:
+{ x, y }` the grid reads. The canvas tests (`build/medit_test`) cover these
+edits on the posture example.
 
 `--send EV1,EV2` fires events at start-up and `--screenshot out.png` saves one
 frame and exits, which CI uses as a smoke test.

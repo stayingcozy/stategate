@@ -17,6 +17,7 @@ add_library(sgcore STATIC
   src/util.c
   src/ydoc.c
   src/model.c
+  src/medit.c
   src/validate.c)
 target_include_directories(sgcore PUBLIC src)
 target_compile_definitions(sgcore PUBLIC _GNU_SOURCE)
@@ -37,6 +38,11 @@ add_executable(stategate
   src/gate.c)
 target_compile_options(stategate PRIVATE -Wall -Wextra -Wswitch-enum -Werror=implicit-function-declaration)
 target_link_libraries(stategate PRIVATE sgcore cjson)
+
+# Tests for the canvas editor's YAML edits.
+add_executable(medit_test tests/medit_test.c)
+target_compile_options(medit_test PRIVATE -Wall -Wextra)
+target_link_libraries(medit_test PRIVATE sgcore)
 
 install(TARGETS stategate DESTINATION bin)
 # `fsm` is a short alias for the same binary.
