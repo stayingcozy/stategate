@@ -405,11 +405,6 @@ static int prune_event(char **t, const char *ev, char *err, size_t errn) {
     int nn = (int)(d.doc.nodes.top - d.doc.nodes.start);
     char *skip = xcalloc((size_t)nn + 1, 1);
     for (int i = 0; i < n_items(events); i++) skip[events->data.sequence.items.start[i]] = 1;
-    yaml_node_t *states = top(&d, "states");
-    for (int i = 0; i < n_items(states); i++) {
-        yaml_node_t *ig = get(&d, item(&d, states, i), "ignore");
-        for (int k = 0; k < n_items(ig); k++) skip[ig->data.sequence.items.start[k]] = 1;
-    }
     int used = 0;
     for (int i = 1; i <= nn && !used; i++)
         if (!skip[i] && is_scalar(N(&d, i)) && !strcmp(S(N(&d, i)), ev)) used = 1;
@@ -448,7 +443,7 @@ int me_add_state(char **t, const char *name, double x, double y, char *err, size
     D d;
     LOAD(d);
     const char *mid = S(get(&d, top(&d, "machine"), "id"));
-    yaml_node_t *states = top(&d, "states"), *events = top(&d, "events");
+    yaml_node_t *states = top(&d, "states");
     if (!*mid) { d_free(&d); return fail(err, errn, "The model has no machine id."); }
     if (!is_seq(states)) { d_free(&d); return fail(err, errn, "The model has no 'states' list."); }
     char id[300];
@@ -461,9 +456,6 @@ int me_add_state(char **t, const char *name, double x, double y, char *err, size
             return fail(err, errn, "There is already a state called %s.", name);
         }
     }
-    SB ig;
-    sb_init(&ig);
-    for (int i = 0; i < n_items(events); i++) sb_printf(&ig, "%s%s", i ? ", " : "", S(item(&d, events, i)));
     char xs[32], ys[32];
     num(xs, sizeof xs, x);
     num(ys, sizeof ys, y);
@@ -473,14 +465,12 @@ int me_add_state(char **t, const char *name, double x, double y, char *err, size
     sb_printf(&block, "id: %s\nname: %s\n", id, name);
     sb_printf(&flow, "{ id: %s, name: %s", id, name);
     if (!n_items(states)) { sb_puts(&block, "initial: true\n"); sb_puts(&flow, ", initial: true"); }
-    if (ig.len) { sb_printf(&block, "ignore: [%s]\n", ig.s); sb_printf(&flow, ", ignore: [%s]", ig.s); }
     sb_printf(&block, "layout: { x: %s, y: %s }", xs, ys);
     sb_printf(&flow, ", layout: { x: %s, y: %s } }", xs, ys);
     Ed e = {0};
     p_seq_append(&d, states, flow.s, block.s, &e);
     d_free(&d);
     ed_apply(t, &e);
-    free(ig.s);
     free(block.s);
     free(flow.s);
     return 0;
@@ -614,14 +604,8 @@ int me_set_transition(char **t, const char *from, const char *ev, const char *to
     if (!declared) p_seq_append(&d, events, ev, ev, &e);
     d_free(&d);
     ed_apply(t, &e);
-    if (!declared) {
-        /* Totality: every other state ignores the new event until someone
-         * draws a transition for it there. */
-        for (int i = 0; i < ids.n; i++) {
-            if (!strcmp(ids.v[i], from)) continue;
-            if (list_add(t, ids.v[i], "ignore", ev, BEFORE_IGNORE, err, errn)) { sl_free(&ids); return -1; }
-        }
-    }
+    /* Other states are left undecided about a new event: the canvas flags
+     * them until each one handles or ignores it. */
     sl_free(&ids);
     if (list_remove(t, from, "ignore", ev, err, errn)) return -1;
     LOAD(d);
@@ -661,8 +645,19 @@ static int drop_transition(char **t, const char *from, const char *ev, char *err
 
 int me_remove_transition(char **t, const char *from, const char *ev, char *err, size_t errn) {
     if (drop_transition(t, from, ev, err, errn)) return -1;
-    if (list_add(t, from, "ignore", ev, BEFORE_IGNORE, err, errn)) return -1;
     return prune_event(t, ev, err, errn);
+}
+
+int me_ignore_event(char **t, const char *id, const char *ev, char *err, size_t errn) {
+    D d;
+    LOAD(d);
+    yaml_node_t *st = state_node(&d, id);
+    int handled = st && find_key(&d, get(&d, st, "on"), ev) >= 0, declared = seq_find(&d, top(&d, "events"), ev) >= 0;
+    d_free(&d);
+    if (!st) return fail(err, errn, "No state %s.", id);
+    if (!declared) return fail(err, errn, "%s is not a declared event.", ev);
+    if (handled) return fail(err, errn, "%s already handles %s.", id, ev);
+    return list_add(t, id, "ignore", ev, BEFORE_IGNORE, err, errn);
 }
 
 int me_delete_state(char **t, const char *id, char *err, size_t errn) {
@@ -691,7 +686,6 @@ int me_delete_state(char **t, const char *id, char *err, size_t errn) {
     int rc = 0;
     for (int i = 0; rc == 0 && i < in_from.n; i++) {
         rc = drop_transition(t, in_from.v[i], in_ev.v[i], err, errn);
-        if (!rc) rc = list_add(t, in_from.v[i], "ignore", in_ev.v[i], BEFORE_IGNORE, err, errn);
     }
     if (!rc) {
         if (d_load(&d, *t) != 0) rc = fail(err, errn, "The model stopped parsing.");

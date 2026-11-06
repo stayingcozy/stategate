@@ -592,6 +592,38 @@ static void draw_list_line(const char *prefix, const StrList *l, float x, float 
     *y += 20.0f * app.ui * app.zoom;
 }
 
+/* Events a state neither handles nor ignores: decisions still open. */
+static int undecided(const State *s, const char **out, int max) {
+    int n = 0;
+    for (int k = 0; k < app.model.events.n; k++) {
+        const char *ev = app.model.events.v[k];
+        if (state_target(s, ev) || sl_contains(&s->ignore, ev)) continue;
+        if (out && n < max) out[n] = ev;
+        n++;
+    }
+    return n;
+}
+
+/* The "N undecided" badge on each node, kept for clicks. */
+static Rectangle badges[MAX_GRID];
+
+static void draw_badge(int i, Rectangle r) {
+    if (i >= MAX_GRID) return;
+    badges[i] = (Rectangle){0};
+    int n = undecided(&app.model.states[i], NULL, 0);
+    if (!n) return;
+    float fs = fmaxf(10.0f, 13.0f * app.ui * app.zoom);
+    char t[48];
+    snprintf(t, sizeof t, "%d undecided", n);
+    Vector2 ts = text_size(t, fs);
+    /* On the bottom edge, clear of self-loops above and arrows at the sides. */
+    Rectangle b = {r.x + r.width - ts.x - 18, r.y + r.height - ts.y / 2 - 3, ts.x + 12, ts.y + 6};
+    badges[i] = b;
+    DrawRectangleRounded(b, 0.5f, 6, (Color){254, 243, 199, 255});
+    DrawRectangleRoundedLinesEx(b, 0.5f, 6, 1.2f, LOCKED);
+    text(t, b.x + 6, b.y + 3, fs, LOCKED);
+}
+
 static void draw_nodes(void) {
     const SgModel *m = &app.model;
     for (int i = 0; i < m->n_states; i++) {
@@ -604,6 +636,7 @@ static void draw_nodes(void) {
             Rectangle o = {r.x - 4, r.y - 4, r.width + 8, r.height + 8};
             DrawRectangleRoundedLinesEx(o, 0.18f, 8, 2.0f, (Color){37, 99, 235, 150});
         }
+        draw_badge(i, r);
         if (s->initial) {
             Vector2 dot = {r.x - 30 * app.zoom, r.y + r.height / 2};
             DrawCircleV(dot, 5 * app.zoom, INK);
@@ -1017,6 +1050,25 @@ static void ed_delete(void) {
     if (edit_end(orig, t, rc, err) == 0) select_none();
 }
 
+/* The selected state ignores event `k` (an index into events), or every
+ * event it is undecided about when k < 0. */
+static void ed_ignore(int k) {
+    const State *s = E.sel[0] ? model_state(&app.model, E.sel) : NULL;
+    if (!s) return;
+    const char *open[256];
+    int n = undecided(s, open, 256);
+    if (n > 256) n = 256;
+    char *t = edit_begin(), err[256] = "";
+    if (!t) return;
+    char *orig = xstrdup(t), id[128];
+    snprintf(id, sizeof id, "%s", s->id);
+    int rc = 0;
+    for (int i = 0; !rc && i < n; i++)
+        if (k < 0 || (k < app.model.events.n && !strcmp(open[i], app.model.events.v[k])))
+            rc = me_ignore_event(&t, id, open[i], err, sizeof err);
+    edit_end(orig, t, rc, err);
+}
+
 static void ed_make_initial(void) {
     if (!E.sel[0]) return;
     char *t = edit_begin(), err[256] = "";
@@ -1078,7 +1130,15 @@ static void edit_mouse(Vector2 mouse, int can_press) {
         E.press_node = -1;
         E.moving = E.linking = E.panning = 0;
         if (!app.have_model) { E.panning = 1; return; }
-        int dot = dot_at(mouse), nd = node_at(mouse), lb = label_at(mouse);
+        int dot = dot_at(mouse), nd = node_at(mouse), lb = label_at(mouse), badge = -1;
+        for (int i = 0; i < app.model.n_states && i < MAX_GRID; i++)
+            if (badges[i].width > 0 && CheckCollisionPointRec(mouse, badges[i])) badge = i;
+        if (badge >= 0) {
+            /* The toolbar then lists the open events, each with Ignore. */
+            select_state(app.model.states[badge].id);
+            E.pressed = 0;
+            return;
+        }
         if (dot >= 0 && !dbl) {
             E.press_node = dot;
             E.linking = 1;
@@ -1280,7 +1340,7 @@ typedef enum {
     A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_CONNECT, A_AI_CHECK, A_AI_CONFIG,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP, A_TICKET_PREV, A_TICKET_NEXT,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
-    A_NEW_MODEL, A_ED_NEW, A_ED_RENAME, A_ED_INITIAL, A_ED_DELETE, A_ED_UNDO,
+    A_NEW_MODEL, A_ED_NEW, A_ED_RENAME, A_ED_INITIAL, A_ED_DELETE, A_ED_UNDO, A_ED_IGNORE,
 } UiAction;
 
 typedef struct {
@@ -2265,7 +2325,19 @@ static void edit_bar(void) {
             button("Delete", A_ED_DELETE, 0, st >= 0 || edge, 0);
             button("Undo", A_ED_UNDO, 0, E.n_undo > 0, 0);
         }
+        const char *open[8];
+        int n_open = st >= 0 && !E.in ? undecided(&app.model.states[st], open, 8) : 0;
+        if (n_open) {
+            CLAY_TEXT(csf("%s neither handles nor ignores %d event%s. Drag its dot to draw a transition for one, or ignore it here:",
+                          app.model.states[st].name, n_open, n_open == 1 ? "" : "s"), T(13, C_AMBER));
+            CLAY({.layout = {.childGap = PX(6), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+                for (int i = 0; i < n_open && i < 6; i++)
+                    button(TextFormat("Ignore %s", open[i]), A_ED_IGNORE, model_event_index(&app.model, open[i]), 1, 0);
+                if (n_open > 1) button(TextFormat("Ignore all %d", n_open), A_ED_IGNORE, -1, 1, 0);
+            }
+        }
         if (E.msg[0]) CLAY_TEXT(cs(E.msg), T(13, C_AMBER));
+        else if (n_open) {}
         else if (E.in == IN_LABEL) CLAY_TEXT(cs("Type the event (UPPER_SNAKE_CASE; commas for more than one), then Enter. Esc cancels."), T(13, C_QUIET));
         else if (E.in == IN_NAME) CLAY_TEXT(cs("Type the state's name (CamelCase), then Enter. Esc cancels."), T(13, C_QUIET));
         else if (st >= 0) CLAY_TEXT(csf("%s: drag it to move, drag its dot to another state for a transition (back onto itself for a loop).", app.model.states[st].name), T(13, C_QUIET));
@@ -2606,6 +2678,7 @@ static void dispatch(UiAction a, int arg) {
     case A_ED_INITIAL: ed_make_initial(); break;
     case A_ED_DELETE: ed_delete(); break;
     case A_ED_UNDO: edit_undo(); break;
+    case A_ED_IGNORE: ed_ignore(arg); break;
     }
 }
 
