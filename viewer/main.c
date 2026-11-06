@@ -261,7 +261,8 @@ static void sim_send(const char *event) {
     const State *s = &app.model.states[app.cur];
     const char *target = state_target(s, event);
     if (!target) {
-        snprintf(app.flash, sizeof app.flash, "%s ignores %s", s->name, event);
+        snprintf(app.flash, sizeof app.flash, sl_contains(&s->ignore, event) ? "%s ignores %s" : "%s has no transition for %s yet (undecided)",
+                 s->name, event);
         return;
     }
     int to = state_index(&app.model, target);
@@ -2157,7 +2158,11 @@ static void sim_body(void) {
                   .cornerRadius = CLAY_CORNER_RADIUS(PX(6))}) {
                 CLAY_TEXT(cs(ev), T(15, target ? C_INK : C_QUIET));
                 CLAY({.layout = {.sizing = {.width = CLAY_SIZING_GROW(0)}}}) {}
-                CLAY_TEXT(t ? csf("-> %s", t->name) : cs("ignored"), T(14, target ? C_ACCENT : C_QUIET));
+                /* Only a listed ignore is "ignored"; a pair nobody decided yet
+                 * says so, like the canvas badge. */
+                int ign = !target && sl_contains(&s->ignore, ev);
+                CLAY_TEXT(t ? csf("-> %s", t->name) : cs(ign ? "ignored" : "undecided: no transition here yet"),
+                          T(14, target ? C_ACCENT : ign ? C_QUIET : C_AMBER));
             }
             button_reg(id, A_EVENT, i, NULL);
         }
