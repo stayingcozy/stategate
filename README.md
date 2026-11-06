@@ -226,16 +226,19 @@ one state that loops back on itself, written to `<folder>.yaml`.
 | rename | double-click a state's name or an arrow's label, or select it and press Enter or **Rename** |
 | change an arrow's events | double-click its label: it holds every event on that arrow, comma separated |
 | make a state initial | select it, **Make initial** |
-| settle undecided events | click a state's **N undecided** badge, then **Ignore** one or **Ignore all** |
+| settle undecided events | click a state's **N undecided** badge (or the event in the simulator): each open event gets a row of target states, pick where it goes, or **Ignore** |
 | delete | select a state or an arrow, press Delete or **Delete** |
 | undo | Ctrl+Z or **Undo** |
 
 The canvas never decides a (state, event) pair for you. A new state handles
 and ignores nothing, a new event is handled only where you drew it, and
 removing a transition leaves that pair open. Each state with open pairs
-shows an amber **N undecided** badge. Click it and the toolbar lists the
-events, each with an **Ignore** button (and **Ignore all**). You can also
-drag the state's dot to draw a transition for one of them. Until every pair
+shows an amber **N undecided** badge. Click it and the toolbar lists each
+open event with a button per state: pick one and that becomes the event's
+transition from this state, or press **Ignore**. You can also drag the
+state's dot to draw a transition for one of them. In the simulator an
+undecided event says so, and clicking it selects the state so the toolbar
+offers the same choices. Until every pair
 is decided, the panel lists the totality errors and the gate stays red. An
 event that no transition, ignore, timer, service or invariant uses any more
 leaves the model. Renaming a state renames its id everywhere it is

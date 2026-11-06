@@ -261,8 +261,13 @@ static void sim_send(const char *event) {
     const State *s = &app.model.states[app.cur];
     const char *target = state_target(s, event);
     if (!target) {
-        snprintf(app.flash, sizeof app.flash, sl_contains(&s->ignore, event) ? "%s ignores %s" : "%s has no transition for %s yet (undecided)",
+        int ign = sl_contains(&s->ignore, event);
+        snprintf(app.flash, sizeof app.flash, ign ? "%s ignores %s" : "%s has no transition for %s yet: pick one in the toolbar over the canvas",
                  s->name, event);
+        if (!ign) { /* select the state, so the toolbar offers the targets */
+            snprintf(E.sel, sizeof E.sel, "%s", s->id);
+            E.sel_from[0] = E.sel_to[0] = 0;
+        }
         return;
     }
     int to = state_index(&app.model, target);
@@ -1053,6 +1058,21 @@ static void ed_delete(void) {
 
 /* The selected state ignores event `k` (an index into events), or every
  * event it is undecided about when k < 0. */
+/* The selected state goes to state `to` on event `k` (index into events):
+ * the undecided pair gets a real transition. */
+static void ed_goto(int k, int to) {
+    const State *s = E.sel[0] ? model_state(&app.model, E.sel) : NULL;
+    if (!s || k < 0 || k >= app.model.events.n || to < 0 || to >= app.model.n_states) return;
+    char *t = edit_begin(), err[256] = "";
+    if (!t) return;
+    char *orig = xstrdup(t), id[128], ev[128], tid[128];
+    snprintf(id, sizeof id, "%s", s->id);
+    snprintf(ev, sizeof ev, "%s", app.model.events.v[k]);
+    snprintf(tid, sizeof tid, "%s", app.model.states[to].id);
+    int rc = me_set_transition(&t, id, ev, tid, err, sizeof err);
+    edit_end(orig, t, rc, err);
+}
+
 static void ed_ignore(int k) {
     const State *s = E.sel[0] ? model_state(&app.model, E.sel) : NULL;
     if (!s) return;
@@ -1341,7 +1361,7 @@ typedef enum {
     A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_CONNECT, A_AI_CHECK, A_AI_CONFIG,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP, A_TICKET_PREV, A_TICKET_NEXT,
     A_BROWSE_INTO, A_BROWSE_UP, A_OPEN_BROWSE, A_OPEN_RECENT, A_CREATE, A_GO_PATH, A_FOCUS,
-    A_NEW_MODEL, A_ED_NEW, A_ED_RENAME, A_ED_INITIAL, A_ED_DELETE, A_ED_UNDO, A_ED_IGNORE,
+    A_NEW_MODEL, A_ED_NEW, A_ED_RENAME, A_ED_INITIAL, A_ED_DELETE, A_ED_UNDO, A_ED_IGNORE, A_ED_GOTO,
 } UiAction;
 
 typedef struct {
@@ -2161,7 +2181,7 @@ static void sim_body(void) {
                 /* Only a listed ignore is "ignored"; a pair nobody decided yet
                  * says so, like the canvas badge. */
                 int ign = !target && sl_contains(&s->ignore, ev);
-                CLAY_TEXT(t ? csf("-> %s", t->name) : cs(ign ? "ignored" : "undecided: no transition here yet"),
+                CLAY_TEXT(t ? csf("-> %s", t->name) : cs(ign ? "ignored" : "undecided: click to pick where it goes"),
                           T(14, target ? C_ACCENT : ign ? C_QUIET : C_AMBER));
             }
             button_reg(id, A_EVENT, i, NULL);
@@ -2333,13 +2353,20 @@ static void edit_bar(void) {
         const char *open[8];
         int n_open = st >= 0 && !E.in ? undecided(&app.model.states[st], open, 8) : 0;
         if (n_open) {
-            CLAY_TEXT(csf("%s neither handles nor ignores %d event%s. Drag its dot to draw a transition for one, or ignore it here:",
-                          app.model.states[st].name, n_open, n_open == 1 ? "" : "s"), T(13, C_AMBER));
-            CLAY({.layout = {.childGap = PX(6), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
-                for (int i = 0; i < n_open && i < 6; i++)
-                    button(TextFormat("Ignore %s", open[i]), A_ED_IGNORE, model_event_index(&app.model, open[i]), 1, 0);
-                if (n_open > 1) button(TextFormat("Ignore all %d", n_open), A_ED_IGNORE, -1, 1, 0);
+            /* Each open pair gets a real answer here: where the event goes
+             * from this state, or that it is ignored. */
+            CLAY_TEXT(csf("%s has no transition yet for %d event%s. Pick where each one goes from %s:",
+                          app.model.states[st].name, n_open, n_open == 1 ? "" : "s", app.model.states[st].name), T(13, C_AMBER));
+            for (int i = 0; i < n_open && i < 6; i++) {
+                int k = model_event_index(&app.model, open[i]);
+                CLAY({.layout = {.childGap = PX(6), .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}}) {
+                    CLAY_TEXT(csf("%s ->", open[i]), T(14, C_INK));
+                    for (int j = 0; j < app.model.n_states && j < 8 && j < MAX_GRID; j++)
+                        button(app.model.states[j].name, A_ED_GOTO, k * MAX_GRID + j, 1, 0);
+                    button("Ignore", A_ED_IGNORE, k, 1, 0);
+                }
             }
+            if (n_open > 6) CLAY_TEXT(csf("...and %d more after these.", n_open - 6), T(13, C_QUIET));
         }
         if (E.msg[0]) CLAY_TEXT(cs(E.msg), T(13, C_AMBER));
         else if (n_open) {}
@@ -2684,6 +2711,7 @@ static void dispatch(UiAction a, int arg) {
     case A_ED_DELETE: ed_delete(); break;
     case A_ED_UNDO: edit_undo(); break;
     case A_ED_IGNORE: ed_ignore(arg); break;
+    case A_ED_GOTO: ed_goto(arg / MAX_GRID, arg % MAX_GRID); break;
     }
 }
 
