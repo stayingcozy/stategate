@@ -13,23 +13,27 @@
  * buffer it may reallocate) and returns 0, or -1 with a sentence in err.
  * On an error the text may be partly edited: callers keep their own copy.
  *
- * The edits keep the model total: a new event is ignored by every other
- * state, a removed transition's event becomes ignored by its state, and an
- * event nothing uses any more leaves the events list. */
+ * Edits never decide for the architect: a new state or event leaves the
+ * other (state, event) pairs unhandled, which the validator reports and
+ * the canvas flags until each is drawn or ignored (me_ignore_event). An
+ * event nothing uses any more (no transition, ignore, timer, service or
+ * invariant) leaves the events list. */
 
 /* A state named `name` (CamelCase), id <machine>.<name>, at layout (x, y).
- * It ignores every declared event until transitions are drawn from it. */
+ * It handles and ignores nothing yet. */
 int me_add_state(char **text, const char *name, double x, double y, char *err, size_t errn);
 /* Renames a state: its id, its name and every reference to the id. */
 int me_rename_state(char **text, const char *id, const char *new_name, char *err, size_t errn);
-/* Deletes a state and the transitions into it (their events become
- * ignored). Deleting the initial state makes the first state left initial. */
+/* Deletes a state and the transitions into it (those states are left
+ * undecided about their events). Deleting the initial state makes the first state left initial. */
 int me_delete_state(char **text, const char *id, char *err, size_t errn);
 int me_set_layout(char **text, const char *id, double x, double y, char *err, size_t errn);
 int me_set_initial(char **text, const char *id, char *err, size_t errn);
 /* from --event--> to: adds the transition, or retargets it if `from`
  * already handles the event. A new event is declared under `events`. */
 int me_set_transition(char **text, const char *from, const char *event, const char *to, char *err, size_t errn);
+/* Lists the event under the state's `ignore`. */
+int me_ignore_event(char **text, const char *id, const char *event, char *err, size_t errn);
 int me_remove_transition(char **text, const char *from, const char *event, char *err, size_t errn);
 
 /* A new model: one initial state that loops back on itself. malloc'd. */

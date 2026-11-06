@@ -226,16 +226,20 @@ one state that loops back on itself, written to `<folder>.yaml`.
 | rename | double-click a state's name or an arrow's label, or select it and press Enter or **Rename** |
 | change an arrow's events | double-click its label: it holds every event on that arrow, comma separated |
 | make a state initial | select it, **Make initial** |
+| settle undecided events | click a state's **N undecided** badge, then **Ignore** one or **Ignore all** |
 | delete | select a state or an arrow, press Delete or **Delete** |
 | undo | Ctrl+Z or **Undo** |
 
-The edits keep the model total: a new event is declared under `events` and
-every other state ignores it until you draw a transition for it there, a
-removed transition's event becomes ignored by its state, and an event no
-state, timer, service or invariant uses any more leaves the model. Renaming
-a state renames its id everywhere it is referenced. A new state is
-unreachable until an arrow reaches it, so the panel lists that error while
-the canvas still draws it. The layout written back is the same `layout:
+The canvas never decides a (state, event) pair for you. A new state handles
+and ignores nothing, a new event is handled only where you drew it, and
+removing a transition leaves that pair open. Each state with open pairs
+shows an amber **N undecided** badge. Click it and the toolbar lists the
+events, each with an **Ignore** button (and **Ignore all**). You can also
+drag the state's dot to draw a transition for one of them. Until every pair
+is decided, the panel lists the totality errors and the gate stays red. An
+event that no transition, ignore, timer, service or invariant uses any more
+leaves the model. Renaming a state renames its id everywhere it is
+referenced. The layout written back is the same `layout:
 { x, y }` the grid reads. The canvas tests (`build/medit_test`) cover these
 edits on the posture example.
 
