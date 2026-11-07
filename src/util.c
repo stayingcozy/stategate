@@ -8,7 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
+
+#include "platform.h"
 
 void *xcalloc(size_t n, size_t size) {
     void *p = calloc(n ? n : 1, size ? size : 1);
@@ -112,11 +113,11 @@ int mkdirs(const char *dir) {
     for (char *c = p + 1; *c; c++) {
         if (*c == '/') {
             *c = 0;
-            if (mkdir(p, 0755) != 0 && errno != EEXIST) { free(p); return -1; }
+            if (sg_mkdir(p) != 0 && !sg_is_dir(p)) { free(p); return -1; }
             *c = '/';
         }
     }
-    int r = (mkdir(p, 0755) != 0 && errno != EEXIST) ? -1 : 0;
+    int r = (sg_mkdir(p) != 0 && !sg_is_dir(p)) ? -1 : 0;
     free(p);
     return r;
 }
@@ -139,22 +140,6 @@ int write_file(const char *path, const char *data, size_t len) {
 int file_exists(const char *path) {
     struct stat st;
     return stat(path, &st) == 0;
-}
-
-char *run_capture(const char *cmd, int *status) {
-    FILE *p = popen(cmd, "r");
-    if (!p) { if (status) *status = -1; return xstrdup(""); }
-    SB b;
-    sb_init(&b);
-    char buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf - 1, p)) > 0) {
-        buf[n] = 0;
-        sb_puts(&b, buf);
-    }
-    int st = pclose(p);
-    if (status) *status = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
-    return b.s;
 }
 
 char *upper_snake_to_camel(const char *s) {

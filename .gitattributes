@@ -1,0 +1,5 @@
+# Keep LF everywhere, Windows checkouts included: the gate hashes file bytes
+# (the sign-off, the manifest of generated files), so CRLF would turn it red.
+* text=auto eol=lf
+*.png binary
+*.ttf binary

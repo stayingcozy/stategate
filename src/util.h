@@ -3,6 +3,14 @@
 
 #include <stddef.h>
 
+/* MinGW checks printf formats as Microsoft's unless told the C99 ones are
+ * in use (__USE_MINGW_ANSI_STDIO, set in CMakeLists.txt). */
+#ifdef __MINGW32__
+#define SG_PRINTF(f, a) __attribute__((format(gnu_printf, f, a)))
+#else
+#define SG_PRINTF(f, a) __attribute__((format(printf, f, a)))
+#endif
+
 /* Growable string. */
 typedef struct {
     char *s;
@@ -11,7 +19,7 @@ typedef struct {
 
 void sb_init(SB *b);
 void sb_puts(SB *b, const char *s);
-void sb_printf(SB *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void sb_printf(SB *b, const char *fmt, ...) SG_PRINTF(2, 3);
 
 /* Growable list of owned strings. */
 typedef struct {
@@ -20,7 +28,7 @@ typedef struct {
 } StrList;
 
 void sl_push(StrList *l, const char *s);
-void sl_pushf(StrList *l, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void sl_pushf(StrList *l, const char *fmt, ...) SG_PRINTF(2, 3);
 int sl_contains(const StrList *l, const char *s);
 
 void *xcalloc(size_t n, size_t size);
@@ -35,10 +43,6 @@ int file_exists(const char *path);
 int mkdirs(const char *dir);
 
 void sha256_hex(const void *data, size_t len, char out[65]);
-
-/* Runs a shell command, returns its stdout (and stderr if merged by the
- * caller). *status gets the exit code. */
-char *run_capture(const char *cmd, int *status);
 
 /* POWER_ON -> PowerOn */
 char *upper_snake_to_camel(const char *s);

@@ -5,6 +5,7 @@
 #include "ai.h"
 #include "gate.h"
 #include "mcp.h"
+#include "platform.h"
 #include "ticket.h"
 #include "version.h"
 
@@ -30,6 +31,7 @@ static int usage(void) {
 }
 
 int main(int argc, char **argv) {
+    sg_platform_init();
     const char *model = NULL;
     int i = 1;
     for (; i < argc; i++) {
@@ -66,7 +68,7 @@ int main(int argc, char **argv) {
         if (!model) {
             static char name[512];
             char cwd[400];
-            const char *base = getcwd(cwd, sizeof cwd) ? strrchr(cwd, '/') : NULL;
+            const char *base = sg_getcwd(cwd, sizeof cwd) ? strrchr(cwd, '/') : NULL;
             snprintf(name, sizeof name, "%s.yaml", base && base[1] ? base + 1 : "model");
             model = name;
         }

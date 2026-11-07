@@ -1,6 +1,5 @@
 #include "gate.h"
 
-#include <fnmatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +9,7 @@
 
 #include "gen_rust.h"
 #include "manifest.h"
+#include "platform.h"
 #include "ticket.h"
 #include "validate.h"
 
@@ -289,7 +289,7 @@ static int check_stubs(const SgModel *m, int release, StrList *e, StrList *stubs
 
 static int matches_any(const StrList *globs, const char *path) {
     for (int i = 0; i < globs->n; i++)
-        if (fnmatch(globs->v[i], path, FNM_PATHNAME) == 0) return 1;
+        if (sg_fnmatch(globs->v[i], path) == 0) return 1;
     return 0;
 }
 
@@ -320,7 +320,7 @@ static void lint_ticket(const SgModel *m, const GenSet *g, const Ticket *t, StrL
     for (int i = 0; i < t->files.n; i++) {
         if (!strncmp(t->files.v[i], ".fsm", 4)) sl_pushf(e, "ticket %s grants '%s'; tickets may not grant .fsm/", t->id, t->files.v[i]);
         for (int k = 0; k < protected.n; k++)
-            if (fnmatch(t->files.v[i], protected.v[k], FNM_PATHNAME) == 0)
+            if (sg_fnmatch(t->files.v[i], protected.v[k]) == 0)
                 sl_pushf(e, "ticket %s grants '%s', which covers protected file %s", t->id, t->files.v[i], protected.v[k]);
     }
 }
@@ -357,12 +357,12 @@ static void check_scope(const SgModel *m, const GenSet *g, const Ticket *t, StrL
         return;
     }
 
-    char cmd[512];
     int st;
-    snprintf(cmd, sizeof cmd, "git diff --name-only --relative %s -- . 2>&1", t->base);
-    char *changed = run_capture(cmd, &st);
+    const char *diff[] = {"git", "diff", "--name-only", "--relative", t->base, "--", ".", NULL};
+    char *changed = run_argv(diff, 1, &st);
     if (st != 0) { sl_pushf(e, "git diff against ticket base %.12s failed: %s", t->base, changed); return; }
-    char *untracked = run_capture("git ls-files --others --exclude-standard -- . 2>/dev/null", &st);
+    const char *others[] = {"git", "ls-files", "--others", "--exclude-standard", "--", ".", NULL};
+    char *untracked = run_argv(others, 0, &st);
     SB all;
     sb_init(&all);
     sb_puts(&all, changed);
@@ -405,7 +405,8 @@ static void check_changelog(const Ticket *t, StrList *e, StrList *notes) {
 
 static void check_tests(StrList *e, StrList *notes) {
     int st;
-    char *out = run_capture("cargo test --quiet --color never 2>&1", &st);
+    const char *test[] = {"cargo", "test", "--quiet", "--color", "never", NULL};
+    char *out = run_argv(test, 1, &st);
     /* Keep the summary lines, and the tail when something failed. */
     int total_passed = 0, total_failed = 0;
     for (char *p = strstr(out, "test result:"); p; p = strstr(p + 1, "test result:")) {
@@ -584,11 +585,14 @@ static void json_bool(SB *b, const char *key, int v) { sb_printf(b, "  \"%s\": %
 
 int cmd_status(const char *model_path, int json) {
     int st;
-    char *inside = run_capture("git rev-parse --is-inside-work-tree 2>/dev/null", &st);
+    const char *inside_cmd[] = {"git", "rev-parse", "--is-inside-work-tree", NULL};
+    const char *head_cmd[] = {"git", "rev-parse", "--verify", "-q", "HEAD", NULL};
+    const char *status_cmd[] = {"git", "status", "--porcelain", "--", ".", ":(exclude)" TICKETS_DIR, NULL};
+    char *inside = run_argv(inside_cmd, 0, &st);
     int git = st == 0 && !strncmp(inside, "true", 4);
-    char *head = git ? run_capture("git rev-parse --verify -q HEAD 2>/dev/null", &st) : xstrdup("");
+    char *head = git ? run_argv(head_cmd, 0, &st) : xstrdup("");
     int has_commit = git && st == 0 && *head;
-    char *porcelain = git ? run_capture("git status --porcelain -- . ':(exclude)" TICKETS_DIR "' 2>/dev/null", &st) : xstrdup("");
+    char *porcelain = git ? run_argv(status_cmd, 0, &st) : xstrdup("");
     int dirty = git && *porcelain;
     int init = file_exists("AGENTS.md") && dir_exists(".fsm");
 
@@ -737,15 +741,19 @@ int cmd_init(const char *model_path) {
         write_file(CHANGELOG, c, strlen(c));
         printf("  wrote %s\n", CHANGELOG);
     }
+    /* The sign-off and the manifest hash file bytes: keep every checkout LF,
+     * or Git on Windows turns them CRLF and the gate goes red. */
+    append_if_missing(".gitattributes", "* text=auto eol=lf");
     append_if_missing(".gitignore", "/target");
     append_if_missing(".gitignore", "Cargo.lock");
     append_if_missing(".gitignore", GATE_JSON);
 
     int st;
-    char *top = run_capture("git rev-parse --show-toplevel 2>/dev/null", &st);
-    top[strcspn(top, "\n")] = 0;
-    char cwd[4096];
-    if (st == 0 && getcwd(cwd, sizeof cwd) && !strcmp(top, cwd)) {
+    const char *top_cmd[] = {"git", "rev-parse", "--show-toplevel", NULL};
+    char *top = run_argv(top_cmd, 0, &st);
+    top[strcspn(top, "\r\n")] = 0;
+    char cwd[SG_PATH_MAX];
+    if (st == 0 && sg_getcwd(cwd, sizeof cwd) && sg_path_eq(top, cwd)) {
         const char *hook = "#!/bin/sh\n# Installed by stategate init. The gate decides what lands.\nexec stategate gate\n";
         write_file(".git/hooks/pre-commit", hook, strlen(hook));
         chmod(".git/hooks/pre-commit", 0755);

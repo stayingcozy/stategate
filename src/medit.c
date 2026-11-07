@@ -325,7 +325,7 @@ static void p_seq_append(D *d, yaml_node_t *s, const char *flow, const char *blo
 
 /* ---- helpers over the text ---- */
 
-static int fail(char *err, size_t n, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+static int fail(char *err, size_t n, const char *fmt, ...) SG_PRINTF(3, 4);
 static int fail(char *err, size_t n, const char *fmt, ...) {
     if (err && n) {
         va_list ap;

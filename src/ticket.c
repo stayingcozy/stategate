@@ -9,6 +9,7 @@
 
 #include "cJSON.h"
 #include "gate.h"
+#include "platform.h"
 #include "ydoc.h"
 
 static const char *const TICKET_KEYS[] = {"id", "title", "goal", "step", "status", "base", "approval",
@@ -160,7 +161,7 @@ Ticket *ticket_current(Tickets *ts) {
  * boundary against an agent that sets out to fake a terminal. */
 int confirm_by_typing(const char *phrase) {
     fflush(stdout);
-    if (!isatty(STDIN_FILENO)) {
+    if (!sg_stdin_is_person()) {
         fprintf(stderr, "refused: this needs the architect at an interactive terminal\n");
         return 0;
     }
@@ -328,14 +329,16 @@ static int activate(Ticket *t, const char *model_path) {
     if (!need_model(model_path)) return 0;
     if (print_lint(model_path, t)) { fprintf(stderr, "ticket %s no longer fits the model; not started\n", t->id); return 0; }
     int st;
-    char *dirty = run_capture("git status --porcelain -- . ':(exclude)" TICKETS_DIR "' 2>&1", &st);
+    const char *status_cmd[] = {"git", "status", "--porcelain", "--", ".", ":(exclude)" TICKETS_DIR, NULL};
+    char *dirty = run_argv(status_cmd, 1, &st);
     if (st != 0) { fprintf(stderr, "ticket start needs a git repository: %s", dirty); return 0; }
     if (*dirty) {
         fprintf(stderr, "not starting %s: commit the finished work first, then run stategate ticket next\n%s", t->id, dirty);
         return 0;
     }
-    char *head = run_capture("git rev-parse HEAD 2>/dev/null", &st);
-    head[strcspn(head, "\n")] = 0;
+    const char *head_cmd[] = {"git", "rev-parse", "HEAD", NULL};
+    char *head = run_argv(head_cmd, 0, &st);
+    head[strcspn(head, "\r\n")] = 0;
     if (st != 0 || !*head) { fprintf(stderr, "ticket start needs a git repository with at least one commit\n"); return 0; }
     t->base = head;
     t->status = xstrdup("active");
@@ -378,7 +381,7 @@ static int review_open(Tickets *ts, const char *model_path) {
     int open = 0;
     for (int i = 0; i < ts->n; i++) open += !strcmp(ts->v[i].status, "open");
     if (!open) printf("no open tickets to review\n");
-    else if (!isatty(STDIN_FILENO)) {
+    else if (!sg_stdin_is_person()) {
         fprintf(stderr, "refused: this needs the architect at an interactive terminal\n");
         return 1;
     }
@@ -601,9 +604,8 @@ static int ticket_prompt(Tickets *ts, const char *id, const char *model_path) {
         const char *f = t->files.v[i];
         if (!strpbrk(f, "*?[")) { print_file_block(f); continue; }
         int st;
-        char cmd[600];
-        snprintf(cmd, sizeof cmd, "git ls-files --cached --others --exclude-standard -- '%s' 2>/dev/null", f);
-        char *list = run_capture(cmd, &st);
+        const char *ls[] = {"git", "ls-files", "--cached", "--others", "--exclude-standard", "--", f, NULL};
+        char *list = run_argv(ls, 0, &st);
         char *save = NULL;
         for (char *p = strtok_r(list, "\n", &save); p; p = strtok_r(NULL, "\n", &save)) print_file_block(p);
     }
@@ -682,12 +684,17 @@ static int ticket_run(const char *model_path) {
     }
     t->status = xstrdup("done");
     ticket_save(t);
-    char msg[600], cmd[800];
+    char msg[600];
     snprintf(msg, sizeof msg, "%s: %s", t->id, t->title);
     for (char *c = msg; *c; c++) if (*c == '\'') *c = ' ';
-    snprintf(cmd, sizeof cmd, "git add -A -- . && git commit -q -m '%s' 2>&1", msg);
+    const char *add[] = {"git", "add", "-A", "--", ".", NULL};
+    const char *commit[] = {"git", "commit", "-q", "-m", msg, NULL};
     int st;
-    char *out = run_capture(cmd, &st);
+    char *out = run_argv(add, 1, &st);
+    if (st == 0) {
+        free(out);
+        out = run_argv(commit, 1, &st);
+    }
     if (st != 0) {
         t->status = xstrdup("active");
         ticket_save(t);

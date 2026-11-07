@@ -20,7 +20,7 @@ void y_free(YReader *r);
 yaml_node_t *y_root(YReader *r);
 yaml_node_t *y_node(YReader *r, int index);
 
-void y_err(YReader *r, yaml_node_t *at, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+void y_err(YReader *r, yaml_node_t *at, const char *fmt, ...) SG_PRINTF(3, 4);
 
 int y_is_map(yaml_node_t *n);
 int y_is_seq(yaml_node_t *n);
