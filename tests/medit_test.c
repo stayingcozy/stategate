@@ -13,7 +13,7 @@
 #include "validate.h"
 
 static int failures;
-static char tmp[] = "/tmp/medit_testXXXXXX";
+static char tmp[1024];
 
 #define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
@@ -71,8 +71,13 @@ static char *slurp(const char *p) {
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: medit_test posture.yaml\n"); return 2; }
+    /* The system's temp folder: $TMPDIR, %TEMP% on Windows, else /tmp. */
+    const char *dir = getenv("TMPDIR");
+    if (!dir || !*dir) dir = getenv("TEMP");
+    if (!dir || !*dir) dir = "/tmp";
+    snprintf(tmp, sizeof tmp, "%s/medit_testXXXXXX", dir);
     int fd = mkstemp(tmp);
-    if (fd < 0) return 2;
+    if (fd < 0) { perror(tmp); return 2; }
     close(fd);
     char err[256] = "";
     SgModel m;

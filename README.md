@@ -25,6 +25,29 @@ scripts/redpaths.sh             # proves the gate turns red for each broken rule
 scripts/mcp_smoke.py            # drives the MCP server through the whole AI loop
 ```
 
+### Windows
+
+stategate builds natively with MinGW-w64 from [MSYS2](https://www.msys2.org)
+(not MSVC); libyaml is built from source, so there is nothing else to install.
+At run time the gate needs [Git for Windows](https://git-scm.com/download/win)
+and, for the generated code, Rust from [rustup.rs](https://rustup.rs).
+
+```sh
+# in the "MSYS2 UCRT64" shell
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja git
+cmake -S . -B build -G Ninja && cmake --build build
+```
+
+`build/stategate.exe` and `build/stategate-view.exe` are self-contained: copy
+them anywhere on your PATH, or put `build` there, and use them from PowerShell
+or Windows Terminal. Steps that need you, the architect, at a terminal
+(`stategate signoff`, `stategate ticket start`) can refuse in the MSYS2
+terminal, which is not always a Windows console; in the app, you answer them in its own dialog
+as on Linux. Claude Desktop, or any MCP client, connects to the project with the
+entry from `stategate mcp config` (Claude Desktop keeps it in
+`%APPDATA%\Claude\claude_desktop_config.json`). `scripts/redpaths.sh` and
+`scripts/mcp_smoke.py` need a pseudo-terminal and run on Linux and macOS (or WSL).
+
 ## Ten-minute walkthrough
 
 ```sh
@@ -155,7 +178,7 @@ prints its output, so everything the app does you can also do at a terminal:
 | Step | Button runs |
 |---|---|
 | Initialize | `git init` when there is no `.git`, then `stategate init` |
-| Draw the state machine | **New state machine** writes `<folder>.yaml` with one state that loops back on itself; **Open in editor** opens the model in your default editor (`xdg-open`, `open` on macOS) |
+| Draw the state machine | **New state machine** writes `<folder>.yaml` with one state that loops back on itself; **Open in editor** opens the model in your default editor (`xdg-open`, `open` on macOS, the file's default app on Windows) |
 | Validate | `stategate validate` |
 | Generate | `stategate gen` |
 | Sign off | `stategate signoff`, in a dialog where you confirm |

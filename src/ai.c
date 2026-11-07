@@ -1,13 +1,12 @@
 #include "ai.h"
 
 #include <ctype.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "cJSON.h"
+#include "platform.h"
 #include "util.h"
 
 /* Your AI over MCP: Claude Code, run with only the stategate MCP server.
@@ -29,17 +28,11 @@ static const char *const WORK_PROMPT =
     "If the gate is red, call get_task again and fix what it reports. Stop when the gate is "
     "green or the ticket locks, and report the gate result exactly as run_gate gave it.";
 
-static void self_path(char out[PATH_MAX], const char *argv0) {
-    ssize_t n = readlink("/proc/self/exe", out, PATH_MAX - 1);
-    if (n > 0) { out[n] = 0; return; }
-    if (!realpath(argv0, out)) snprintf(out, PATH_MAX, "%s", argv0);
-}
-
 /* {"mcpServers":{"stategate":{"command":<this binary>,"args":["-C",<project>,"mcp"]}}} */
 static char *mcp_config_json(const char *argv0, int pretty) {
-    char self[PATH_MAX], cwd[PATH_MAX];
-    self_path(self, argv0);
-    if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+    char self[SG_PATH_MAX], cwd[SG_PATH_MAX];
+    sg_self_exe(self, sizeof self, argv0);
+    if (!sg_getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
     cJSON *root = cJSON_CreateObject();
     cJSON *servers = cJSON_AddObjectToObject(root, "mcpServers");
     cJSON *sg = cJSON_AddObjectToObject(servers, "stategate");
@@ -61,17 +54,15 @@ int cmd_mcp_config(const char *argv0) {
 }
 
 static int have_claude(void) {
-    int st;
-    char *out = run_capture("command -v claude 2>/dev/null", &st);
-    free(out);
-    if (st == 0) return 1;
+    char path[SG_PATH_MAX];
+    if (sg_which("claude", path, sizeof path)) return 1;
     fprintf(stderr, "claude is not on PATH: install Claude Code (https://claude.com/claude-code), "
                     "or use stategate mcp config with another MCP client\n");
     return 0;
 }
 
 /* Prints the command, shell-quoted, then becomes it. */
-static int exec_shown(char *const argv[]) {
+static int exec_shown(const char *const argv[]) {
     printf("$");
     for (int i = 0; argv[i]; i++) {
         const char *a = argv[i];
@@ -83,21 +74,20 @@ static int exec_shown(char *const argv[]) {
         else printf(" '%s'", a);
     }
     printf("\n");
-    fflush(stdout);
-    execvp(argv[0], argv);
-    perror(argv[0]);
-    return 127;
+    return run_exec(argv);
 }
 
 static int ai_run(const char *prompt, const char *argv0) {
     if (!have_claude()) return 2;
     char *cfg = mcp_config_json(argv0, 0);
-    char *argv[] = {"claude", "-p", (char *)prompt,
+    const char *argv[] = {"claude", "-p", prompt,
                     "--mcp-config", cfg, "--strict-mcp-config",
                     "--tools", "",                    /* no built-in tools: no shell, no editor */
                     "--allowedTools", "mcp__stategate", /* every stategate tool, nothing else */
                     "--permission-mode", "dontAsk", NULL};
-    return exec_shown(argv);
+    int rc = exec_shown(argv);
+    free(cfg);
+    return rc;
 }
 
 static int ai_usage(void) {
@@ -115,18 +105,19 @@ int cmd_ai(int argc, char **argv, const char *argv0) {
     if (!strcmp(argv[0], "work")) return ai_run(WORK_PROMPT, argv0);
     if (!strcmp(argv[0], "connect")) {
         if (!have_claude()) return 2;
-        char self[PATH_MAX], cwd[PATH_MAX];
-        self_path(self, argv0);
-        if (!getcwd(cwd, sizeof cwd)) return 1;
+        char self[SG_PATH_MAX], cwd[SG_PATH_MAX];
+        sg_self_exe(self, sizeof self, argv0);
+        if (!sg_getcwd(cwd, sizeof cwd)) return 1;
         /* Replace an older registration, e.g. one pointing at another build. */
         int st;
-        free(run_capture("claude mcp remove -s local stategate >/dev/null 2>&1", &st));
-        char *add[] = {"claude", "mcp", "add", "-s", "local", "stategate", "--", self, "-C", cwd, "mcp", NULL};
+        const char *remove[] = {"claude", "mcp", "remove", "-s", "local", "stategate", NULL};
+        free(run_argv(remove, 0, &st));
+        const char *add[] = {"claude", "mcp", "add", "-s", "local", "stategate", "--", self, "-C", cwd, "mcp", NULL};
         return exec_shown(add);
     }
     if (!strcmp(argv[0], "check")) {
         if (!have_claude()) return 2;
-        char *get[] = {"claude", "mcp", "get", "stategate", NULL};
+        const char *get[] = {"claude", "mcp", "get", "stategate", NULL};
         return exec_shown(get);
     }
     return ai_usage();

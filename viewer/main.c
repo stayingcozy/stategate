@@ -31,6 +31,7 @@
 #include "runner.h"
 #include "medit.h"
 #include "model.h"
+#include "platform.h"
 #include "validate.h"
 
 #ifndef SG_RESOURCE_DIR
@@ -207,7 +208,7 @@ static Clay_String cs(const char *s) {
     return (Clay_String){.isStaticallyAllocated = false, .length = (int32_t)n, .chars = dst};
 }
 
-static Clay_String csf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static Clay_String csf(const char *fmt, ...) SG_PRINTF(1, 2);
 static Clay_String csf(const char *fmt, ...) {
     char buf[1024];
     va_list ap;
@@ -223,15 +224,7 @@ static time_t mtime_of(const char *path) {
 }
 
 /* Changes with every write, even two in one second. */
-static long long file_sig(const char *path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return 0;
-#ifdef __APPLE__
-    return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec + (long long)st.st_size * 7;
-#else
-    return (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec + (long long)st.st_size * 7;
-#endif
-}
+static long long file_sig(const char *path) { return sg_file_sig(path); }
 
 /* ---- model + simulator ---- */
 
@@ -1401,7 +1394,7 @@ static void refresh_status(void);
 
 static void run_cli(const char *title, int use_pty, const char *a1, const char *a2, const char *a3) {
     if (app.job.running) return;
-    char *argv[6] = {app.sg, (char *)a1, (char *)a2, (char *)a3, NULL, NULL};
+    const char *argv[6] = {app.sg, a1, a2, a3, NULL, NULL};
     if (job_start(&app.job, title, argv, use_pty) != 0) {
         sb_init(&app.job.out);
         sb_printf(&app.job.out, "could not start %s\n", app.sg);
@@ -1414,9 +1407,16 @@ static void run_cli(const char *title, int use_pty, const char *a1, const char *
     app.copy_on_finish = 0;
 }
 
+/* script is for sh, or for cmd.exe on Windows. */
 static void run_shell(const char *title, const char *script) {
     if (app.job.running) return;
-    char *argv[] = {"/bin/sh", "-c", (char *)script, NULL};
+#ifdef _WIN32
+    char quoted[PATH_MAX + 256];
+    snprintf(quoted, sizeof quoted, "\"%s\"", script); /* /s takes the outer quotes off */
+    const char *argv[] = {"cmd.exe", "/d", "/s", "/c", quoted, NULL};
+#else
+    const char *argv[] = {"/bin/sh", "-c", script, NULL};
+#endif
     job_start(&app.job, title, argv, 0);
     app.modal = 0;
     app.inline_pty = 0;
@@ -1428,9 +1428,8 @@ static void run_shell(const char *title, const char *script) {
 /* ---- your AI ---- */
 
 static void ai_load(void) {
-    int st;
-    free(run_capture("command -v claude >/dev/null 2>&1", &st));
-    app.have_claude = st == 0;
+    char path[SG_PATH_MAX];
+    app.have_claude = sg_which("claude", path, sizeof path);
 }
 
 /* An AI step: an MCP server request (Claude Code with only the stategate
@@ -1529,10 +1528,9 @@ static void js(cJSON *o, const char *k, char *out, size_t n) {
 }
 
 static void refresh_status(void) {
-    char cmd[PATH_MAX + 32];
-    snprintf(cmd, sizeof cmd, "'%s' status --json 2>/dev/null", app.sg);
+    const char *cmd[] = {app.sg, "status", "--json", NULL};
     int rc;
-    char *out = run_capture(cmd, &rc);
+    char *out = run_argv(cmd, 0, &rc);
     cJSON *o = cJSON_Parse(out);
     free(out);
     Status st = {0};
@@ -1589,10 +1587,9 @@ static long long tickets_signature(void) {
     char path[PATH_MAX];
     while ((e = readdir(d))) {
         if (e->d_name[0] == '.') continue;
-        struct stat st;
         snprintf(path, sizeof path, ".fsm/tickets/%s", e->d_name);
-        if (stat(path, &st) == 0)
-            sig = sig * 31 + (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec + st.st_size;
+        long long s = sg_file_sig(path);
+        if (s) sig = sig * 31 + s;
     }
     closedir(d);
     return sig;
@@ -1607,10 +1604,9 @@ static int ticket_index(const char *id) {
  * changed (your AI filled it in, you approved it) becomes the focus, so the
  * card shows each edit as it lands. */
 static void tickets_reload(int follow_changes) {
-    char cmd[PATH_MAX + 48];
-    snprintf(cmd, sizeof cmd, "'%s' ticket list --json 2>/dev/null", app.sg);
+    const char *cmd[] = {app.sg, "ticket", "list", "--json", NULL};
     int rc;
-    char *out = run_capture(cmd, &rc);
+    char *out = run_argv(cmd, 0, &rc);
     cJSON *o = cJSON_Parse(out);
     free(out);
     if (!o) return; /* a half-written file: the next change reloads */
@@ -1669,7 +1665,7 @@ static const char *short_path(const char *p) {
     static char out[4][256];
     static int k;
     char *o = out[k++ % 4];
-    const char *home = getenv("HOME");
+    const char *home = sg_home();
     char tmp[PATH_MAX];
     if (home && *home && !strncmp(p, home, strlen(home))) snprintf(tmp, sizeof tmp, "~%s", p + strlen(home));
     else snprintf(tmp, sizeof tmp, "%s", p);
@@ -2409,10 +2405,8 @@ static Clay_RenderCommandArray build_project(void) {
 /* ---- home screen: open or create a project ---- */
 
 static char *recent_path(void) {
-    static char p[PATH_MAX];
-    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
-    if (xdg && *xdg) snprintf(p, sizeof p, "%s/stategate/recent", xdg);
-    else snprintf(p, sizeof p, "%s/.config/stategate/recent", home ? home : ".");
+    static char p[SG_PATH_MAX];
+    sg_config_path(p, sizeof p, "recent");
     return p;
 }
 
@@ -2436,7 +2430,7 @@ static void recent_add(const char *dir) {
     sb_printf(&b, "%s\n", dir);
     for (int i = 0; i < app.recent.n && i < 9; i++)
         if (strcmp(app.recent.v[i], dir)) sb_printf(&b, "%s\n", app.recent.v[i]);
-    char dirpath[PATH_MAX];
+    char dirpath[SG_PATH_MAX];
     snprintf(dirpath, sizeof dirpath, "%s", recent_path());
     *strrchr(dirpath, '/') = 0;
     mkdirs(dirpath);
@@ -2447,8 +2441,8 @@ static void recent_add(const char *dir) {
 static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
 static void browse_to(const char *dir) {
-    char real[PATH_MAX];
-    if (!realpath(dir, real)) { snprintf(app.home_msg, sizeof app.home_msg, "no such folder: %s", dir); return; }
+    char real[SG_PATH_MAX];
+    if (!sg_realpath(dir, real)) { snprintf(app.home_msg, sizeof app.home_msg, "no such folder: %s", dir); return; }
     DIR *d = opendir(real);
     if (!d) { snprintf(app.home_msg, sizeof app.home_msg, "cannot open %s", real); return; }
     snprintf(app.browse, sizeof app.browse, "%s", real);
@@ -2471,8 +2465,8 @@ static void browse_to(const char *dir) {
 static int no_recent; /* --screenshot runs leave the recent list alone */
 
 static void open_project(const char *dir) {
-    char real[PATH_MAX];
-    if (!realpath(dir, real) || chdir(real) != 0) {
+    char real[SG_PATH_MAX];
+    if (!sg_realpath(dir, real) || chdir(real) != 0) {
         snprintf(app.home_msg, sizeof app.home_msg, "cannot open %s", dir);
         app.screen = SCREEN_HOME;
         return;
@@ -2596,7 +2590,7 @@ static void go_home(void) {
     app.screen = SCREEN_HOME;
     app.focus = 0;
     recent_load();
-    browse_to(app.project[0] ? app.project : app.browse[0] ? app.browse : (getenv("HOME") ? getenv("HOME") : "/"));
+    browse_to(app.project[0] ? app.project : app.browse[0] ? app.browse : (sg_home() ? sg_home() : "/"));
     if (app.project[0]) {
         char parent[PATH_MAX];
         snprintf(parent, sizeof parent, "%s/..", app.project);
@@ -2607,15 +2601,7 @@ static void go_home(void) {
 
 /* ---- input ---- */
 
-static void open_in_editor(const char *path) {
-    char cmd[PATH_MAX + 64];
-#ifdef __APPLE__
-    snprintf(cmd, sizeof cmd, "open '%s' >/dev/null 2>&1 &", path);
-#else
-    snprintf(cmd, sizeof cmd, "xdg-open '%s' >/dev/null 2>&1 &", path);
-#endif
-    if (system(cmd) != 0) { /* nothing to do: the editor is the person's own */ }
-}
+static void open_in_editor(const char *path) { sg_open_default_app(path); }
 
 static void dispatch(UiAction a, int arg) {
     switch (a) {
@@ -2626,7 +2612,11 @@ static void dispatch(UiAction a, int arg) {
     case A_INIT: {
         /* One step: a repository if there is none, then stategate init. */
         char script[PATH_MAX + 64];
+#ifdef _WIN32
+        snprintf(script, sizeof script, "(if not exist .git git init -q) && \"%s\" init", app.sg);
+#else
         snprintf(script, sizeof script, "[ -d .git ] || git init -q && '%s' init", app.sg);
+#endif
         run_shell(app.st.git ? "stategate init" : "git init && stategate init", script);
         break;
     }
@@ -2637,7 +2627,11 @@ static void dispatch(UiAction a, int arg) {
     case A_GEN: run_cli("stategate gen", 0, "gen", NULL, NULL); break;
     case A_SIGNOFF: run_cli("stategate signoff", 1, "signoff", NULL, NULL); break;
     case A_COMMIT: run_shell("git add -A && git commit -m \"stategate: model and generated code\"",
+#ifdef _WIN32
+                             "git add -A && git commit -q -m \"stategate: model and generated code\" && git log --oneline -1"); break;
+#else
                              "git add -A && git commit -q -m 'stategate: model and generated code' && git log --oneline -1"); break;
+#endif
     case A_TICKET_GEN: run_cli("stategate ticket gen", 0, "ticket", "gen", NULL); break;
     case A_REVIEW:
         /* On a pty, as at a terminal, but answered in the ticket card. */
@@ -2679,7 +2673,7 @@ static void dispatch(UiAction a, int arg) {
     case A_BROWSE_UP: { char p[PATH_MAX]; snprintf(p, sizeof p, "%s/..", app.browse); browse_to(p); break; }
     case A_GO_PATH: {
         char p[PATH_MAX];
-        if (app.path_in[0] == '~') snprintf(p, sizeof p, "%s%s", getenv("HOME") ? getenv("HOME") : "", app.path_in + 1);
+        if (app.path_in[0] == '~') snprintf(p, sizeof p, "%s%s", sg_home() ? sg_home() : "", app.path_in + 1);
         else snprintf(p, sizeof p, "%s", app.path_in);
         browse_to(p);
         break;
@@ -2687,13 +2681,13 @@ static void dispatch(UiAction a, int arg) {
     case A_OPEN_BROWSE: open_project(app.browse); break;
     case A_OPEN_RECENT: if (arg < app.recent.n) open_project(app.recent.v[arg]); break;
     case A_CREATE: {
-        if (strchr(app.name_in, '/') || !strcmp(app.name_in, ".") || !strcmp(app.name_in, "..")) {
+        if (strpbrk(app.name_in, "/\\:") || !strcmp(app.name_in, ".") || !strcmp(app.name_in, "..")) {
             snprintf(app.home_msg, sizeof app.home_msg, "a folder name, not a path");
             break;
         }
         char p[PATH_MAX];
         snprintf(p, sizeof p, "%s/%s", app.browse, app.name_in);
-        if (mkdir(p, 0755) != 0 && access(p, F_OK) != 0) { snprintf(app.home_msg, sizeof app.home_msg, "cannot create %s", p); break; }
+        if (sg_mkdir(p) != 0 && !sg_is_dir(p)) { snprintf(app.home_msg, sizeof app.home_msg, "cannot create %s", p); break; }
         app.name_in[0] = 0;
         open_project(p);
         break;
@@ -2757,24 +2751,17 @@ static void clay_error(Clay_ErrorData e) { fprintf(stderr, "clay: %.*s\n", e.err
 /* The CLI the buttons run: next to this binary when it is there (a build
  * tree, or both installed together), else whatever `stategate` is on PATH. */
 static void find_cli(void) {
-    char self[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
-    if (n > 0) {
-        self[n] = 0;
-        char *slash = strrchr(self, '/');
-        if (slash) {
-            *slash = 0;
-            snprintf(app.sg, sizeof app.sg, "%s/stategate", self);
-            if (access(app.sg, X_OK) == 0) {
-                /* The pre-commit hook calls `stategate` by name: let it find
-                 * this same build even when it is not installed on PATH. */
-                const char *path = getenv("PATH");
-                char *np = malloc(strlen(self) + (path ? strlen(path) : 0) + 2);
-                sprintf(np, "%s:%s", self, path ? path : "");
-                setenv("PATH", np, 1);
-                free(np);
-                return;
-            }
+    char self[SG_PATH_MAX];
+    sg_self_exe(self, sizeof self, "stategate-view");
+    char *slash = strrchr(self, '/');
+    if (slash) {
+        *slash = 0;
+        snprintf(app.sg, sizeof app.sg, "%s/stategate" SG_EXE_SUFFIX, self);
+        if (file_exists(app.sg) && !sg_is_dir(app.sg)) {
+            /* The pre-commit hook calls `stategate` by name: let it find
+             * this same build even when it is not installed on PATH. */
+            sg_path_prepend(self);
+            return;
         }
     }
     snprintf(app.sg, sizeof app.sg, "stategate");
@@ -2848,10 +2835,8 @@ static float ui_scale(void) {
 }
 
 static char *ui_path(void) {
-    static char p[PATH_MAX];
-    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
-    if (xdg && *xdg) snprintf(p, sizeof p, "%s/stategate/text_size", xdg);
-    else snprintf(p, sizeof p, "%s/.config/stategate/text_size", home ? home : ".");
+    static char p[SG_PATH_MAX];
+    sg_config_path(p, sizeof p, "text_size");
     return p;
 }
 
@@ -2863,7 +2848,7 @@ static float ui_mult_load(void) {
 }
 
 static void ui_mult_save(float m) {
-    char dir[PATH_MAX];
+    char dir[SG_PATH_MAX];
     snprintf(dir, sizeof dir, "%s", ui_path());
     *strrchr(dir, '/') = 0;
     mkdirs(dir);

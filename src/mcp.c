@@ -6,17 +6,14 @@
  * start, ticket split) are not tools: they need a person at a terminal. */
 #include "mcp.h"
 
-#include <fcntl.h>
-#include <fnmatch.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "cJSON.h"
+#include "platform.h"
 #include "ticket.h"
 #include "util.h"
 #include "version.h"
@@ -24,46 +21,19 @@
 #define PROTOCOL_VERSION "2025-06-18"
 #define MAX_READ_BYTES (256 * 1024)
 
-static char self_exe[PATH_MAX];
+static char self_exe[SG_PATH_MAX];
 static const char *g_model;
 
-/* Runs this binary with argv (no shell), stdin from /dev/null, and returns
- * stdout and stderr together. */
+/* Runs this binary with argv (no shell), stdin empty, and returns stdout
+ * and stderr together. */
 static char *run_self(const char *const *args, int *status) {
-    int fd[2];
-    if (pipe(fd) != 0) { *status = -1; return xstrdup("pipe failed"); }
-    pid_t pid = fork();
-    if (pid < 0) { *status = -1; return xstrdup("fork failed"); }
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_RDONLY);
-        if (devnull >= 0) dup2(devnull, STDIN_FILENO);
-        dup2(fd[1], STDOUT_FILENO);
-        dup2(fd[1], STDERR_FILENO);
-        close(fd[0]);
-        close(fd[1]);
-        const char *argv[32];
-        int n = 0;
-        argv[n++] = self_exe;
-        if (g_model) { argv[n++] = "--model"; argv[n++] = g_model; }
-        for (int i = 0; args[i] && n < 31; i++) argv[n++] = args[i];
-        argv[n] = NULL;
-        execvp(self_exe, (char *const *)argv);
-        _exit(127);
-    }
-    close(fd[1]);
-    SB b;
-    sb_init(&b);
-    char buf[4096];
-    ssize_t r;
-    while ((r = read(fd[0], buf, sizeof buf - 1)) > 0) {
-        buf[r] = 0;
-        sb_puts(&b, buf);
-    }
-    close(fd[0]);
-    int st;
-    waitpid(pid, &st, 0);
-    *status = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
-    return b.s;
+    const char *argv[32];
+    int n = 0;
+    argv[n++] = self_exe;
+    if (g_model) { argv[n++] = "--model"; argv[n++] = g_model; }
+    for (int i = 0; args[i] && n < 31; i++) argv[n++] = args[i];
+    argv[n] = NULL;
+    return run_argv(argv, 1, status);
 }
 
 /* ---- tool results ---- */
@@ -96,6 +66,10 @@ static const char *arg_str(cJSON *args, const char *key) {
 static const char *path_problem(const char *p) {
     if (!p || !*p) return "path is empty";
     if (p[0] == '/') return "path must be relative to the project";
+#ifdef _WIN32
+    if (strchr(p, '\\')) return "use '/' between folders";
+    if (strchr(p, ':')) return "path must be relative to the project";
+#endif
     if (!strcmp(p, "..") || !strncmp(p, "../", 3) || strstr(p, "/../") ||
         (strlen(p) >= 3 && !strcmp(p + strlen(p) - 3, "/..")))
         return "path may not contain '..'";
@@ -104,17 +78,16 @@ static const char *path_problem(const char *p) {
 
 /* The file, once symlinks are resolved, must still be inside the project. */
 static int inside_project(const char *path) {
-    char root[PATH_MAX], real[PATH_MAX];
-    if (!getcwd(root, sizeof root) || !realpath(path, real)) return 0;
-    size_t n = strlen(root);
-    return !strncmp(real, root, n) && (real[n] == '/' || real[n] == 0);
+    char root[SG_PATH_MAX], real[SG_PATH_MAX];
+    if (!sg_realpath(".", root) || !sg_realpath(path, real)) return 0;
+    return sg_path_within(real, root);
 }
 
 static cJSON *tool_read_file(cJSON *args) {
     const char *path = arg_str(args, "path");
     const char *bad = path_problem(path);
     if (bad) return text_result(bad, 1);
-    if (access(path, F_OK) == 0 && !inside_project(path)) return text_result("refused: path resolves outside the project", 1);
+    if (file_exists(path) && !inside_project(path)) return text_result("refused: path resolves outside the project", 1);
     size_t len = 0;
     char *text = read_file(path, &len);
     if (!text) return text_result("no such file", 1);
@@ -126,7 +99,7 @@ static cJSON *tool_read_file(cJSON *args) {
 }
 
 static int mkdirs_for(const char *path) {
-    char dir[PATH_MAX];
+    char dir[SG_PATH_MAX];
     snprintf(dir, sizeof dir, "%s", path);
     char *slash = strrchr(dir, '/');
     if (!slash) return 0;
@@ -154,7 +127,7 @@ static cJSON *tool_write_file(cJSON *args) {
     }
     int allowed = !strcmp(path, "CHANGELOG.md");
     for (int i = 0; i < t->files.n && !allowed; i++)
-        if (fnmatch(t->files.v[i], path, FNM_PATHNAME) == 0) allowed = 1;
+        if (sg_fnmatch(t->files.v[i], path) == 0) allowed = 1;
     if (!allowed || !strncmp(path, ".fsm", 4)) {
         SB b;
         sb_init(&b);
@@ -164,10 +137,9 @@ static cJSON *tool_write_file(cJSON *args) {
         free(b.s);
         return r;
     }
-    struct stat sb_;
-    if (lstat(path, &sb_) == 0 && S_ISLNK(sb_.st_mode)) return text_result("refused: path is a symbolic link", 1);
+    if (sg_is_symlink(path)) return text_result("refused: path is a symbolic link", 1);
     if (mkdirs_for(path) != 0) return text_result("cannot create the directory", 1);
-    char parent[PATH_MAX];
+    char parent[SG_PATH_MAX];
     snprintf(parent, sizeof parent, "%s", path);
     char *slash = strrchr(parent, '/');
     if (slash) {
@@ -176,7 +148,7 @@ static cJSON *tool_write_file(cJSON *args) {
     }
     if (0 || write_file(path, content, strlen(content)) != 0)
         return text_result("cannot write the file", 1);
-    char msg[PATH_MAX + 64];
+    char msg[SG_PATH_MAX + 64];
     snprintf(msg, sizeof msg, "wrote %s (%zu bytes)", path, strlen(content));
     return text_result(msg, 0);
 }
@@ -364,16 +336,15 @@ static void handle(cJSON *msg) {
 }
 
 int cmd_mcp(const char *model_path, const char *argv0) {
-    ssize_t n = readlink("/proc/self/exe", self_exe, sizeof self_exe - 1);
-    if (n > 0) self_exe[n] = 0;
-    else snprintf(self_exe, sizeof self_exe, "%s", argv0); /* found via PATH when it has no '/' */
+    sg_self_exe(self_exe, sizeof self_exe, argv0);
+    sg_binary_stdio();
     g_model = model_path;
     fprintf(stderr, "stategate mcp: serving tools for the project in this directory\n");
 
     char *line = NULL;
     size_t cap = 0;
-    ssize_t len;
-    while ((len = getline(&line, &cap, stdin)) > 0) {
+    long len;
+    while ((len = sg_getline(&line, &cap, stdin)) > 0) {
         while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
         if (!len) continue;
         cJSON *msg = cJSON_Parse(line);
