@@ -71,9 +71,11 @@ jobs:
           if ($out -notmatch '"isError":false') { Write-Output $out; exit 1 }
       - name: Viewer smoke test (Mesa's software OpenGL)
         run: |
-          cp "$MINGW_PREFIX"/bin/opengl32.dll "$MINGW_PREFIX"/bin/libgallium_wgl.dll build/ || true
-          build/stategate-view.exe examples/posture --send POWER_ON,CALIBRATED --screenshot "$(cygpath -m "$PWD")/viewer-windows.png" 2> viewer.err || { cat viewer.err; exit 1; }
-          test -s viewer-windows.png
+          ls "$MINGW_PREFIX"/bin | grep -iE "opengl32|gallium|glapi" || true
+          cp "$MINGW_PREFIX"/bin/opengl32.dll "$MINGW_PREFIX"/bin/libgallium_wgl.dll "$MINGW_PREFIX"/bin/libglapi.dll build/ 2>/dev/null || true
+          rc=0
+          build/stategate-view.exe examples/posture --send POWER_ON,CALIBRATED --screenshot "$(cygpath -m "$PWD")/viewer-windows.png" > viewer.out 2>&1 || rc=$?
+          if [ $rc -ne 0 ] || [ ! -s viewer-windows.png ]; then echo "exit $rc"; tail -40 viewer.out; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: app-screenshot-windows
