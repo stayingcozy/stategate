@@ -16,7 +16,7 @@ QP prior art, and the posture logger reference project.
 | Live view with a trace protocol, a model-hash handshake and derived sequence diagrams | Log replay first: generated code writes trace records, the viewer replays the file. |
 | Trace-based translator (model from recorded traces) | Dropped. |
 | Requirements view and IEC 62304 report | Deferred. |
-| C backend replaces or joins Rust (undecided) | Both backends, held to one conformance contract (below). |
+| C backend replaces or joins Rust (undecided) | Rust and C are both supported, but each project picks one language and generates only that backend (below). |
 
 ## Scope rule, tightened
 
@@ -94,35 +94,27 @@ BNO055s at 0x28 on separate channels don't collide.
 No board header and no HAL trait are generated from this. `SafeHal` clamps stay where they
 are, on HAL calls.
 
-## Two backends, one contract
+## One language per project
 
-Rust and C are both supported. They stay consistent because neither backend owns the
-semantics: one language-neutral source does, and both backends are tested against it.
+stategate supports Rust and C, but a project picks one language and sticks to it. A Rust
+project generates only Rust; a C project generates only C. Nothing is generated twice.
 
-1. **One transition table.** `stategate gen` writes `.fsm/table.json` (state, event,
-   target, actions in order, ignored pairs). Both backends generate dispatch from it. The
-   manifest hash already covers the model, so drift checks stay single-sourced.
-2. **One set of test vectors.** Transition tests are generated as data first
-   (`.fsm/vectors.json`: start state, event sequence, expected states and action calls),
-   then rendered into each language's test framework: `cargo test` for Rust, Unity for C.
-   The same vectors must pass in both, so behaviour can't diverge.
-3. **Same gate checks, per-language mechanics.**
+- `language` is set once per project (in `system.yaml`, or on the machine for a
+  single-machine project) and every machine in the project uses it.
+- The app, the viewer, tickets and the MCP tools stay language agnostic. Only `gen` and the
+  language-specific gate checks dispatch on the language.
+- Both generators keep the same semantics: same dispatch order, same trace tags, same
+  transition tests derived from the model.
 
 | Gate check | Rust | C |
 |---|---|---|
 | no_wildcards | `match` with no `_` arm | `switch` over an enum with no `default`, built with `-Wswitch-enum -Werror` |
 | trace_tags | `// @action`, `@service`, `@node` comments | The same comments, unchanged |
 | hal_clamp | Generated `SafeHal` wrapper | Generated wrapper functions; node files may not include the raw HAL header (gate greps includes) |
-| tests | `cargo test` | CMake + Unity, built with GCC or Clang |
+| tests | `cargo test` | Unity tests (the framework ESP-IDF ships), built and run on the host with GCC or Clang through CMake |
 
-4. **One trace record format.** Both backends write the same bytes (below), so the viewer
-   doesn't care which language produced a log.
-
-`language` moves off the machine. The target picks it, so one model can be generated as
-Rust for the host simulator and as C for the device.
-
-The cost to accept: every new feature (channels, nesting) is implemented in two
-generators. The shared table and vectors keep that cost to rendering, not semantics.
+Generated C should drop into an ESP-IDF component, but stay plain C11 with no ESP-IDF
+dependency in the transition code, so host tests run without the toolchain.
 
 ## Live view: log replay
 
@@ -135,18 +127,11 @@ generators. The shared table and vectors keep that cost to rendering, not semant
   to a file works. A streaming protocol comes later, only if replay proves too slow to
   use.
 
-## Next steps (in order)
+## Next steps
 
-1. `system.yaml`, channels and external events, with cross-machine totality and channel
-   policy checks.
-2. `waits_for` invariant and `emits` on actions.
-3. `uses:` resources with collision and scope checks.
-4. Shared `table.json` and `vectors.json`; move the Rust generator onto them.
-5. C backend on the same table and vectors, with Unity tests.
-6. Trace hook and log replay in the viewer.
-
-Deferred: rate budget, wait-cycle detection, shallow nesting, requirement IDs and the
-traceability report, a streaming trace protocol.
+Tracked as sequential tasks in the project thread. Deferred: rate budget, wait-cycle
+detection, shallow nesting, requirement IDs and the traceability report, a streaming
+trace protocol, cross-language conformance vectors.
 
 ## Open questions carried from v1
 
