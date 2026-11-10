@@ -361,5 +361,47 @@ setup_c
 sed -i 's/posture_hal_log(hal, "NUDGE");/posture_hal_log(hal, "NUDGE")/' src/actions/start_nudge.c
 expect "C: node code that does not compile" tests
 
+# Systems: several machines in their own folders, wired by system.yaml.
+setup_sys() {
+    dir="$WORK/case_sys"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    (cd "$ROOT/examples/logger_system" && tar cf - --exclude=build .) | (cd "$dir" && tar xmf -)
+    cd "$dir"
+    git init -q . && git add -A && git -c user.name=t -c user.email=t@t commit -qm base
+}
+# expect_sys <description> <text the system gate must print>
+expect_sys() {
+    out=$("$SG" gate 2>&1 || true)
+    if echo "$out" | grep -q -- "$2"; then ok "$1"; else bad "$1" "expected: $2"; fi
+}
+
+setup_sys
+expect_sys "system: untouched example is green" "SYSTEM GATE GREEN  3 machines"
+
+setup_sys
+sed -i 's/^sends: \[TICK\]/sends: []/' sampler/sampler.yaml
+expect_sys "system: a channel carries an event its sender does not send" "but sampler does not list TICK under 'sends'"
+
+setup_sys
+sed -i '/event: LOG_FULL/d' system.yaml
+expect_sys "system: an event is sent but no channel carries it" "logger sends LOG_FULL, but no channel carries it"
+
+setup_sys
+sed -i 's/^external: \[BUTTON, FAULT\]/external: [FAULT]/' system.yaml
+expect_sys "system: an event is received but nothing sends it" "device receives BUTTON, but nothing sends it"
+
+setup_sys
+sed -i 's/depth: 64, drop: never //; s/kind: queue, depth: 64, drop: never/kind: queue/' system.yaml
+expect_sys "system: a queue with no depth or drop policy" "needs a depth"
+
+setup_sys
+sed -i 's/language: c }/language: rust }/' logger/logger.yaml
+expect_sys "system: a machine in another language" "logger is rust but the system is c"
+
+setup_sys
+echo "/* tweak */" >> sampler/src/gen/machine.c
+expect_sys "system: one red machine turns the system red" "SYSTEM GATE RED  1 of 3 machines red"
+
 echo "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

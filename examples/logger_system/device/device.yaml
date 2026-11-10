@@ -1,0 +1,43 @@
+# The supervisor. Every (state, event) pair is either handled under `on` or listed under `ignore`.
+
+machine: { id: device, version: 1, language: c }
+
+events: [BUTTON, LOG_FULL, FAULT]
+sends: [START, STOP]
+
+states:
+  - id: device.Idle
+    name: Idle
+    initial: true
+    on:
+      BUTTON: device.Recording
+      FAULT: device.Fault
+    ignore: [LOG_FULL]
+    layout: { x: 60, y: 120 }
+
+  - id: device.Recording
+    name: Recording
+    entry: [start_all]
+    exit: [stop_all]
+    on:
+      BUTTON: device.Idle
+      LOG_FULL: device.Idle
+      FAULT: device.Fault
+    layout: { x: 360, y: 120 }
+
+  - id: device.Fault
+    name: Fault
+    on:
+      FAULT: device.Fault
+    ignore: [BUTTON, LOG_FULL]
+    layout: { x: 660, y: 120 }
+
+actions:
+  start_all: { stub: true, note: "send START to the sampler and the logger" }
+  stop_all: { stub: true, note: "send STOP to the sampler and the logger" }
+
+invariants:
+  - { id: inv.fault_latches, locked: true, kind: every_state_handles, event: FAULT, target: device.Fault }
+
+steps:
+  - { id: step0, goal: "Start and stop recording from the button", status: active }

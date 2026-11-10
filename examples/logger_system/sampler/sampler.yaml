@@ -1,0 +1,31 @@
+# Reads the sensors every 10 ms while sampling and sends one TICK per period.
+
+machine: { id: sampler, version: 1, language: c }
+
+events: [START, STOP, PERIOD]
+sends: [TICK]
+
+states:
+  - id: sampler.Stopped
+    name: Stopped
+    initial: true
+    on:
+      START: sampler.Sampling
+    ignore: [STOP, PERIOD]
+    layout: { x: 60, y: 120 }
+
+  - id: sampler.Sampling
+    name: Sampling
+    after: { ms: 10, event: PERIOD }
+    on:
+      PERIOD: sampler.Sampling
+      STOP: sampler.Stopped
+    ignore: [START]
+    entry: [read_and_send]
+    layout: { x: 360, y: 120 }
+
+actions:
+  read_and_send: { stub: true, note: "read every sensor, stamp the tick, send TICK" }
+
+steps:
+  - { id: step0, goal: "Send a fake TICK every 10 ms", status: active }

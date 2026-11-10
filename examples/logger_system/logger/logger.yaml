@@ -1,0 +1,44 @@
+# Writes each TICK to storage and tells the device when storage is full.
+
+machine: { id: logger, version: 1, language: c }
+
+events: [START, STOP, TICK, DISK_FULL]
+sends: [LOG_FULL]
+
+states:
+  - id: logger.Ready
+    name: Ready
+    initial: true
+    on:
+      START: logger.Logging
+    ignore: [STOP, TICK, DISK_FULL]
+    layout: { x: 60, y: 120 }
+
+  - id: logger.Logging
+    name: Logging
+    invoke: [storage]
+    on:
+      TICK: logger.Logging
+      STOP: logger.Ready
+      DISK_FULL: logger.Full
+    ignore: [START]
+    entry: [write_tick]
+    layout: { x: 360, y: 120 }
+
+  - id: logger.Full
+    name: Full
+    entry: [report_full]
+    on:
+      STOP: logger.Ready
+    ignore: [START, TICK, DISK_FULL]
+    layout: { x: 660, y: 120 }
+
+actions:
+  write_tick: { stub: true, note: "append the tick to the open file" }
+  report_full: { stub: true, note: "send LOG_FULL to the device" }
+
+services:
+  storage: { stub: true, emits: [DISK_FULL], note: "watch free space; emit DISK_FULL below 1 MB" }
+
+steps:
+  - { id: step0, goal: "Count ticks; report full after 1000", status: active }

@@ -74,6 +74,7 @@ typedef struct {
     long version;
     char *language;
     StrList events;
+    StrList sends; /* events this machine sends to others (system.yaml channels) */
     HalCall *hal;
     int n_hal;
     State *states;

@@ -90,6 +90,43 @@ includes the raw `gen/hal.h`. The generated `CMakeLists.txt` also works as an
 ESP-IDF component: put the project folder under `components/`. Unity is fetched
 at configure time; set `STATEGATE_UNITY_DIR` to a local copy to build offline.
 
+## Several machines: a system
+
+A device with separate tasks (sensors, storage, radio) is several small
+machines that talk through channels. `system.yaml` at the root names each
+machine's folder, and each folder is an ordinary stategate project with its own
+model, generated code, tickets and gate. `examples/logger_system` has three:
+
+```yaml
+system: { id: logger_system, language: c }
+machines:
+  - { id: device,  dir: device }
+  - { id: sampler, dir: sampler }
+  - { id: logger,  dir: logger }
+channels:
+  - { from: sampler, to: logger, event: TICK, kind: queue, depth: 64, drop: never }
+  - { from: device,  to: logger, event: START, kind: sync }
+  # ...
+external: [BUTTON, FAULT]   # from outside: an ISR, the phone
+```
+
+A machine lists what it sends under `sends:` in its own model. At the system
+root, `stategate validate` checks the wiring:
+
+- every channel's sender lists the event under `sends`, and its receiver
+  declares it under `events`, so every receiving state must handle or ignore it
+- every sent event has a channel, and every received event has a sender, is
+  raised inside the machine (a service, an `after` timer), or is `external`
+- a `queue` has a `depth` and a `drop` policy (`never`, `oldest`, `newest`); a
+  `sync` channel has neither
+- every machine uses the system's language
+
+`stategate gate` at the root checks the wiring, then runs the gate in each
+machine's folder; the pre-commit hook `stategate init` installs there does the
+same. `gen` and `init` also run in every folder, and `stategate export mermaid`
+draws the machines and channels. Everything else (tickets, sign-off, the app)
+works in one machine's folder: `stategate -C sampler ticket gen`.
+
 ## A new project, end to end
 
 Every step is a command, so a future app or an MCP server can drive the same

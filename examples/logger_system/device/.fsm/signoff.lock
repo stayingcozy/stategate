@@ -1,0 +1,5 @@
+# Written by `stategate signoff`. Only the architect runs it.
+hash: e090ce24fb5442bcba97b9bbc2ee3fb1a1f3582cbaa8295febcd88b6ddbc907d
+signed: 2026-11-10T00:48:53Z
+
+# invariant inv.fault_latches kind=every_state_handles event=FAULT target=device.Fault state= exit_event= limit_ms=-1 call= arg= max=-1
