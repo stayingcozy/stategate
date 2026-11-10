@@ -9,7 +9,7 @@
 
 static const char *const ROOT_KEYS[] = {"machine", "events", "hal", "states", "actions",
                                         "services", "invariants", "steps", NULL};
-const char *const SG_LANGUAGES[] = {"rust", NULL};
+const char *const SG_LANGUAGES[] = {"rust", "c", NULL};
 
 static const char *const MACHINE_KEYS[] = {"id", "version", "language", NULL};
 static const char *const STATE_KEYS[] = {"id", "name", "initial", "entry", "exit", "on", "ignore",

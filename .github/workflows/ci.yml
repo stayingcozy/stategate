@@ -11,6 +11,8 @@ jobs:
         run: build/medit_test examples/posture/posture.yaml
       - name: Gate the posture example
         run: build/stategate -C examples/posture gate
+      - name: Gate the C posture example
+        run: build/stategate -C examples/posture_c gate
       - name: Red paths
         run: scripts/redpaths.sh
       - name: MCP server smoke test
