@@ -7,7 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "gen_rust.h"
+#include "backend.h"
 #include "manifest.h"
 #include "platform.h"
 #include "ticket.h"
@@ -46,7 +46,7 @@ int cmd_gen(const char *model_path) {
         return 1;
     }
     GenSet g;
-    gen_rust(&m, &g);
+    backend_for(&m)->gen(&m, &g);
     int wrote = 0, scaffolded = 0;
     for (int i = 0; i < g.n; i++) {
         GenFile *f = &g.v[i];
@@ -206,29 +206,11 @@ static void check_drift(const SgModel *m, const GenSet *g, StrList *e) {
     }
 }
 
-static void check_wildcards(const GenSet *g, StrList *e) {
-    for (int i = 0; i < g->n; i++) {
-        const GenFile *f = &g->v[i];
-        if (f->scaffold) continue;
-        size_t n = strlen(f->path);
-        if (n < 3 || strcmp(f->path + n - 3, ".rs")) continue;
-        char *disk = read_file(f->path, NULL);
-        if (!disk) continue;
-        int line = 1;
-        for (char *p = disk; *p; p++) {
-            if (*p == '\n') line++;
-            if (p[0] == '_' && p[1] == ' ' && p[2] == '=' && p[3] == '>' && (p == disk || p[-1] == ' ' || p[-1] == '|'))
-                sl_pushf(e, "%s:%d: wildcard match arm '_ =>' in generated code", f->path, line);
-        }
-        free(disk);
-    }
-}
-
 static void check_traces(const SgModel *m, StrList *e) {
     char path[512];
     for (int i = 0; i < m->n_actions; i++) {
         const Action *a = &m->actions[i];
-        snprintf(path, sizeof path, "src/actions/%s.rs", a->id);
+        backend_node_path(backend_for(m), "actions", a->id, path, sizeof path);
         char *text = read_file(path, NULL);
         if (!text) { sl_pushf(e, "%s is missing (action %s): run stategate gen to scaffold it", path, a->id); continue; }
         if (!contains_tag(text, "action", a->id)) sl_pushf(e, "%s: missing trace tag '// @action %s'", path, a->id);
@@ -241,7 +223,7 @@ static void check_traces(const SgModel *m, StrList *e) {
     }
     for (int i = 0; i < m->n_services; i++) {
         const Service *sv = &m->services[i];
-        snprintf(path, sizeof path, "src/services/%s.rs", sv->id);
+        backend_node_path(backend_for(m), "services", sv->id, path, sizeof path);
         char *text = read_file(path, NULL);
         if (!text) { sl_pushf(e, "%s is missing (service %s): run stategate gen to scaffold it", path, sv->id); continue; }
         if (!contains_tag(text, "service", sv->id)) sl_pushf(e, "%s: missing trace tag '// @service %s'", path, sv->id);
@@ -263,7 +245,7 @@ static int check_stubs(const SgModel *m, int release, StrList *e, StrList *stubs
     char path[512];
     for (int i = 0; i < m->n_actions; i++) {
         const Action *a = &m->actions[i];
-        snprintf(path, sizeof path, "src/actions/%s.rs", a->id);
+        backend_node_path(backend_for(m), "actions", a->id, path, sizeof path);
         int marker = file_has_stub_marker(path);
         if (a->locked && (a->stub || marker))
             sl_pushf(e, "locked action %s is a stub; locked safety items are never stubbed (implement %s)", a->id, path);
@@ -273,7 +255,7 @@ static int check_stubs(const SgModel *m, int release, StrList *e, StrList *stubs
     }
     for (int i = 0; i < m->n_services; i++) {
         const Service *s = &m->services[i];
-        snprintf(path, sizeof path, "src/services/%s.rs", s->id);
+        backend_node_path(backend_for(m), "services", s->id, path, sizeof path);
         int marker = file_has_stub_marker(path);
         if (s->locked && (s->stub || marker))
             sl_pushf(e, "locked service %s is a stub; locked safety items are never stubbed", s->id);
@@ -335,7 +317,7 @@ int ticket_lint(const char *model_path, const Ticket *t, StrList *errors) {
         return errors->n - before;
     }
     GenSet g = {0};
-    gen_rust(&m, &g);
+    backend_for(&m)->gen(&m, &g);
     lint_ticket(&m, &g, t, errors);
     return errors->n - before;
 }
@@ -401,30 +383,6 @@ static void check_changelog(const Ticket *t, StrList *e, StrList *notes) {
     for (int i = 0; i < t->nodes.n; i++)
         if (!strstr(sec, t->nodes.v[i])) sl_pushf(e, "%s entry for %s does not mention node %s", CHANGELOG, t->id, t->nodes.v[i]);
     free(text);
-}
-
-static void check_tests(StrList *e, StrList *notes) {
-    int st;
-    const char *test[] = {"cargo", "test", "--quiet", "--color", "never", NULL};
-    char *out = run_argv(test, 1, &st);
-    /* Keep the summary lines, and the tail when something failed. */
-    int total_passed = 0, total_failed = 0;
-    for (char *p = strstr(out, "test result:"); p; p = strstr(p + 1, "test result:")) {
-        int a = 0, b = 0;
-        char *q = strstr(p, ". ");
-        if (q && sscanf(q, ". %d passed; %d failed", &a, &b) == 2) { total_passed += a; total_failed += b; }
-    }
-    if (st != 0) {
-        sl_pushf(e, "cargo test failed (exit %d): %d passed, %d failed", st, total_passed, total_failed);
-        /* last ~25 lines */
-        int lines = 0;
-        char *p = out + strlen(out);
-        while (p > out && lines < 25) { p--; if (*p == '\n') lines++; }
-        sl_push(e, p);
-    } else {
-        sl_pushf(notes, "%d tests passed", total_passed);
-    }
-    free(out);
 }
 
 static void write_gate_json(int ok, int release, const SgModel *m, const Ticket *t, int stub_count, const StrList *stubs,
@@ -505,7 +463,7 @@ int cmd_gate(const char *model_path, int release) {
         switch (c) {
         case C_SCHEMA: model_load(model_path, &m, e); break;
         case C_STATECHART: check_statechart(&m, e); break;
-        case C_INVARIANTS: check_model_invariants(&m, e); gen_rust(&m, &g); break;
+        case C_INVARIANTS: check_model_invariants(&m, e); backend_for(&m)->gen(&m, &g); break;
         case C_SIGNOFF: {
             char *have = read_file(SIGNOFF_PATH, NULL);
             char *want = locked_hash(&m);
@@ -521,12 +479,12 @@ int cmd_gate(const char *model_path, int release) {
             break;
         }
         case C_DRIFT: check_drift(&m, &g, e); break;
-        case C_WILDCARD: check_wildcards(&g, e); break;
+        case C_WILDCARD: backend_for(&m)->check_wildcards(&g, e); break;
         case C_TRACE: check_traces(&m, e); break;
         case C_STUBS: stub_count = check_stubs(&m, release, e, &stubs); break;
         case C_SCOPE: check_scope(&m, &g, t, e, &notes[c]); break;
         case C_CHANGELOG: check_changelog(t, e, &notes[c]); break;
-        case C_TESTS: check_tests(e, &notes[c]); break;
+        case C_TESTS: backend_for(&m)->run_tests(e, &notes[c]); break;
         }
         if (e->n) { res[c].status = "fail"; failed = c; }
         else {
@@ -603,7 +561,7 @@ int cmd_status(const char *model_path, int json) {
     int generated = 0, locked = 0, signed_off = 0;
     if (valid) {
         GenSet g = {0};
-        gen_rust(&m, &g);
+        backend_for(&m)->gen(&m, &g);
         check_drift(&m, &g, &drift);
         generated = drift.n == 0;
         char *canon = locked_canonical(&m);
@@ -744,8 +702,13 @@ int cmd_init(const char *model_path) {
     /* The sign-off and the manifest hash file bytes: keep every checkout LF,
      * or Git on Windows turns them CRLF and the gate goes red. */
     append_if_missing(".gitattributes", "* text=auto eol=lf");
-    append_if_missing(".gitignore", "/target");
-    append_if_missing(".gitignore", "Cargo.lock");
+    /* Build outputs of the model's language; Rust's when there is no model yet. */
+    SgModel lm;
+    memset(&lm, 0, sizeof lm);
+    StrList le = {0};
+    const Backend *be = file_exists(model_path) && model_load(model_path, &lm, &le) == 0 ? backend_for(&lm)
+                                                                                         : backend_named("rust");
+    for (int i = 0; be->gitignore[i]; i++) append_if_missing(".gitignore", be->gitignore[i]);
     append_if_missing(".gitignore", GATE_JSON);
 
     int st;

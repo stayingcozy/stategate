@@ -70,6 +70,7 @@ add_executable(stategate
   src/main.c
   src/ai.c
   src/mcp.c
+  src/backend.c
   src/gen_rust.c
   src/manifest.c
   src/ticket.c

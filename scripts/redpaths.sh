@@ -84,6 +84,10 @@ echo "pub fn sneaky() {}" > src/sneaky.rs
 expect "file outside the ticket" ticket_scope
 
 setup
+sed -i 's/language: rust/language: cobol/' posture.yaml
+expect "a language with no backend" schema
+
+setup
 sed -i 's/max: 3 }/max: 8 }/' posture.yaml
 expect "locked intensity limit raised without sign-off" signoff
 

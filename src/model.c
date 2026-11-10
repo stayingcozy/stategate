@@ -9,6 +9,8 @@
 
 static const char *const ROOT_KEYS[] = {"machine", "events", "hal", "states", "actions",
                                         "services", "invariants", "steps", NULL};
+const char *const SG_LANGUAGES[] = {"rust", NULL};
+
 static const char *const MACHINE_KEYS[] = {"id", "version", "language", NULL};
 static const char *const STATE_KEYS[] = {"id", "name", "initial", "entry", "exit", "on", "ignore",
                                          "invoke", "after", "layout", "note", NULL};
@@ -251,8 +253,15 @@ int model_load(const char *path, SgModel *m, StrList *errors) {
     }
     if (!m->id) { y_err(&r, mach, "machine.id is required"); m->id = xstrdup("machine"); }
     if (!m->language) m->language = xstrdup("rust");
-    if (strcmp(m->language, "rust") != 0)
-        y_err(&r, mach, "language '%s' is not supported yet (only rust)", m->language);
+    int known = 0;
+    for (int i = 0; SG_LANGUAGES[i]; i++) known |= !strcmp(m->language, SG_LANGUAGES[i]);
+    if (!known) {
+        SB names;
+        sb_init(&names);
+        for (int i = 0; SG_LANGUAGES[i]; i++) sb_printf(&names, "%s%s", i ? ", " : "", SG_LANGUAGES[i]);
+        y_err(&r, mach, "language '%s' is not supported (one of: %s)", m->language, names.s);
+        free(names.s);
+    }
 
     yaml_node_t *events = y_get(&r, root, "events");
     if (!events) y_err(&r, root, "missing required 'events' list");

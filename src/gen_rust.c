@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "platform.h"
+
 static void add(GenSet *g, const char *path, SB *content, int scaffold) {
     if (g->n == g->cap) {
         g->cap = g->cap ? g->cap * 2 : 16;
@@ -560,4 +562,48 @@ void gen_rust(const SgModel *m, GenSet *out) {
     gen_tests(m, out);
     gen_sim(m, out);
     gen_scaffolds(m, out);
+}
+
+/* ---- gate checks for Rust projects ---- */
+
+void rust_check_wildcards(const GenSet *g, StrList *e) {
+    for (int i = 0; i < g->n; i++) {
+        const GenFile *f = &g->v[i];
+        if (f->scaffold) continue;
+        size_t n = strlen(f->path);
+        if (n < 3 || strcmp(f->path + n - 3, ".rs")) continue;
+        char *disk = read_file(f->path, NULL);
+        if (!disk) continue;
+        int line = 1;
+        for (char *p = disk; *p; p++) {
+            if (*p == '\n') line++;
+            if (p[0] == '_' && p[1] == ' ' && p[2] == '=' && p[3] == '>' && (p == disk || p[-1] == ' ' || p[-1] == '|'))
+                sl_pushf(e, "%s:%d: wildcard match arm '_ =>' in generated code", f->path, line);
+        }
+        free(disk);
+    }
+}
+
+void rust_run_tests(StrList *e, StrList *notes) {
+    int st;
+    const char *test[] = {"cargo", "test", "--quiet", "--color", "never", NULL};
+    char *out = run_argv(test, 1, &st);
+    /* Keep the summary lines, and the tail when something failed. */
+    int total_passed = 0, total_failed = 0;
+    for (char *p = strstr(out, "test result:"); p; p = strstr(p + 1, "test result:")) {
+        int a = 0, b = 0;
+        char *q = strstr(p, ". ");
+        if (q && sscanf(q, ". %d passed; %d failed", &a, &b) == 2) { total_passed += a; total_failed += b; }
+    }
+    if (st != 0) {
+        sl_pushf(e, "cargo test failed (exit %d): %d passed, %d failed", st, total_passed, total_failed);
+        /* last ~25 lines */
+        int lines = 0;
+        char *p = out + strlen(out);
+        while (p > out && lines < 25) { p--; if (*p == '\n') lines++; }
+        sl_push(e, p);
+    } else {
+        sl_pushf(notes, "%d tests passed", total_passed);
+    }
+    free(out);
 }

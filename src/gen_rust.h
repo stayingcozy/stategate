@@ -16,5 +16,8 @@ typedef struct {
 
 /* Builds every generated and scaffold file for a valid model, in memory. */
 void gen_rust(const SgModel *m, GenSet *out);
+/* Rust's gate checks: no `_ =>` arm in generated code, and `cargo test`. */
+void rust_check_wildcards(const GenSet *g, StrList *errors);
+void rust_run_tests(StrList *errors, StrList *notes);
 
 #endif

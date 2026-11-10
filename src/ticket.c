@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "cJSON.h"
+#include "backend.h"
 #include "gate.h"
 #include "platform.h"
 #include "ydoc.h"
@@ -465,11 +466,11 @@ static int ticket_gen(Tickets *ts, const char *model_path) {
     StrList nodes = {0}, paths = {0};
     char path[512];
     for (int i = 0; i < m.n_actions; i++) {
-        snprintf(path, sizeof path, "src/actions/%s.rs", m.actions[i].id);
+        backend_node_path(backend_for(&m), "actions", m.actions[i].id, path, sizeof path);
         if (m.actions[i].stub || has_stub_marker(path)) { sl_push(&nodes, m.actions[i].id); sl_push(&paths, path); }
     }
     for (int i = 0; i < m.n_services; i++) {
-        snprintf(path, sizeof path, "src/services/%s.rs", m.services[i].id);
+        backend_node_path(backend_for(&m), "services", m.services[i].id, path, sizeof path);
         if (m.services[i].stub || has_stub_marker(path)) { sl_push(&nodes, m.services[i].id); sl_push(&paths, path); }
     }
     mkdirs(TICKETS_DIR);
@@ -484,7 +485,7 @@ static int ticket_gen(Tickets *ts, const char *model_path) {
         char id[32], file[512], test[512];
         next_id(ts, &made, id);
         snprintf(file, sizeof file, "%s/%s.yaml", TICKETS_DIR, id);
-        snprintf(test, sizeof test, "tests/logic_%s.rs", nodes.v[k]);
+        backend_logic_test_path(backend_for(&m), nodes.v[k], test, sizeof test);
         Ticket t;
         memset(&t, 0, sizeof t);
         t.id = id;
@@ -532,11 +533,22 @@ static int ticket_fill(int argc, char **argv, Tickets *ts, const char *model_pat
 
 /* ---- the implementer's loop: `ticket prompt` and `ticket run` ---- */
 
+/* Markdown fence language for a file, from its extension. */
+static const char *fence_for(const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (!dot) return "";
+    if (!strcmp(dot, ".rs")) return "rust";
+    if (!strcmp(dot, ".c") || !strcmp(dot, ".h")) return "c";
+    if (!strcmp(dot, ".yaml") || !strcmp(dot, ".yml")) return "yaml";
+    if (!strcmp(dot, ".md")) return "markdown";
+    return "";
+}
+
 static void print_file_block(const char *path) {
     char *text = read_file(path, NULL);
     if (!text) { printf("\n### %s\n\n(does not exist yet; create it)\n", path); return; }
     size_t n = strlen(text);
-    printf("\n### %s\n\n```rust\n%s%s```\n", path, text, n && text[n - 1] != '\n' ? "\n" : "");
+    printf("\n### %s\n\n```%s\n%s%s```\n", path, fence_for(path), text, n && text[n - 1] != '\n' ? "\n" : "");
     free(text);
 }
 

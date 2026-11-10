@@ -88,6 +88,9 @@ typedef struct {
     int n_steps;
 } SgModel;
 
+/* Languages stategate generates code for; a project uses exactly one. */
+extern const char *const SG_LANGUAGES[];
+
 /* Parses the model and records schema errors (gate check 1). Returns 0
  * when the file parsed with no schema errors. */
 int model_load(const char *path, SgModel *m, StrList *errors);
