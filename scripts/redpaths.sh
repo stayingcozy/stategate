@@ -325,6 +325,7 @@ setup_c() {
     mkdir -p "$dir"
     (cd "$ROOT/examples/posture_c" && tar cf - --exclude=./build .) | (cd "$dir" && tar xmf -)
     cd "$dir"
+    mkdir -p .fsm/tickets
     rm -f .fsm/tickets/*.yaml .fsm/gate.json
     cat > .fsm/tickets/T900.yaml <<'EOF2'
 id: T900
