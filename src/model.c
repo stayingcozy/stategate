@@ -8,7 +8,7 @@
 #include "ydoc.h"
 
 static const char *const ROOT_KEYS[] = {"machine", "events", "hal", "states", "actions",
-                                        "services", "invariants", "steps", "sends", NULL};
+                                        "services", "invariants", "steps", "sends", "buses", NULL};
 const char *const SG_LANGUAGES[] = {"rust", "c", NULL};
 
 static const char *const MACHINE_KEYS[] = {"id", "version", "language", NULL};
@@ -17,8 +17,57 @@ static const char *const STATE_KEYS[] = {"id", "name", "initial", "entry", "exit
 static const char *const AFTER_KEYS[] = {"ms", "event", NULL};
 static const char *const LAYOUT_KEYS[] = {"x", "y", NULL};
 static const char *const TRANS_KEYS[] = {"target", NULL};
-static const char *const ACTION_KEYS[] = {"stub", "locked", "note", NULL};
-static const char *const SERVICE_KEYS[] = {"stub", "locked", "fidelity", "emits", "note", NULL};
+static const char *const ACTION_KEYS[] = {"stub", "locked", "note", "uses", NULL};
+static const char *const SERVICE_KEYS[] = {"stub", "locked", "fidelity", "emits", "note", "uses", NULL};
+static const char *const USE_KEYS[] = {"comm", "bus", "addr", "cs", "pin", NULL};
+static const char *const BUS_KEYS[] = {"id", "comm", "via", "hz", "sda", "scl", "sck", "mosi", "miso", "tx", "rx", NULL};
+static const char *const BUS_PINS[] = {"sda", "scl", "sck", "mosi", "miso", "tx", "rx", NULL};
+
+static void parse_uses(YReader *r, yaml_node_t *seq, const char *owner, Resource **out, int *n_out) {
+    if (!seq) return;
+    if (!y_is_seq(seq)) { y_err(r, seq, "%s: 'uses' must be a list of { comm, bus, addr | cs | pin }", owner); return; }
+    int n = (int)(seq->data.sequence.items.top - seq->data.sequence.items.start);
+    *out = xcalloc((size_t)n, sizeof(Resource));
+    for (yaml_node_item_t *it = seq->data.sequence.items.start; it < seq->data.sequence.items.top; it++) {
+        yaml_node_t *un = y_node(r, *it);
+        if (!y_is_map(un)) { y_err(r, un, "%s: each 'uses' entry must be a mapping", owner); continue; }
+        y_check_keys(r, un, "uses", USE_KEYS);
+        Resource *u = &(*out)[(*n_out)++];
+        u->line = y_line(un);
+        u->comm = y_str(r, y_get(r, un, "comm"), "comm");
+        u->bus = y_str(r, y_get(r, un, "bus"), "bus");
+        u->addr = y_int(r, y_get(r, un, "addr"), "addr", -1);
+        u->cs = y_str(r, y_get(r, un, "cs"), "cs");
+        u->pin = y_str(r, y_get(r, un, "pin"), "pin");
+        if (!u->comm) { y_err(r, un, "%s: a 'uses' entry needs comm: i2c, spi, uart or gpio", owner); u->comm = xstrdup("?"); }
+    }
+}
+
+static void parse_buses(YReader *r, yaml_node_t *seq, SgModel *m) {
+    if (!seq) return;
+    if (!y_is_seq(seq)) { y_err(r, seq, "'buses' must be a list"); return; }
+    int n = (int)(seq->data.sequence.items.top - seq->data.sequence.items.start);
+    m->buses = xcalloc((size_t)n, sizeof(Bus));
+    for (yaml_node_item_t *it = seq->data.sequence.items.start; it < seq->data.sequence.items.top; it++) {
+        yaml_node_t *bn = y_node(r, *it);
+        if (!y_is_map(bn)) { y_err(r, bn, "each bus must be a mapping"); continue; }
+        y_check_keys(r, bn, "bus", BUS_KEYS);
+        Bus *b = &m->buses[m->n_buses++];
+        b->line = y_line(bn);
+        b->id = y_str(r, y_get(r, bn, "id"), "bus id");
+        b->comm = y_str(r, y_get(r, bn, "comm"), "comm");
+        b->via = y_str(r, y_get(r, bn, "via"), "via");
+        if (!b->id) { y_err(r, bn, "bus is missing 'id'"); b->id = xstrdup("?"); }
+        if (!b->comm) { y_err(r, bn, "bus %s needs comm: i2c, spi or uart", b->id); b->comm = xstrdup("?"); }
+        for (int k = 0; BUS_PINS[k]; k++) {
+            char *pin = y_str(r, y_get(r, bn, BUS_PINS[k]), BUS_PINS[k]);
+            if (!pin) continue;
+            sl_push(&b->roles, BUS_PINS[k]);
+            sl_push(&b->pins, pin);
+            free(pin);
+        }
+    }
+}
 static const char *const INV_KEYS[] = {"id", "locked", "kind", "event", "target", "state",
                                        "limit_ms", "exit_event", "call", "max", "note", NULL};
 static const char *const STEP_KEYS[] = {"id", "goal", "status", NULL};
@@ -108,6 +157,7 @@ static void parse_actions(YReader *r, yaml_node_t *map, SgModel *m) {
         a->stub = y_bool(r, y_get(r, vn, "stub"), "stub", 0);
         a->locked = y_bool(r, y_get(r, vn, "locked"), "locked", 0);
         a->note = y_str(r, y_get(r, vn, "note"), "note");
+        parse_uses(r, y_get(r, vn, "uses"), a->id, &a->uses, &a->n_uses);
     }
 }
 
@@ -129,6 +179,7 @@ static void parse_services(YReader *r, yaml_node_t *map, SgModel *m) {
         s->fidelity = y_str(r, y_get(r, vn, "fidelity"), "fidelity");
         s->note = y_str(r, y_get(r, vn, "note"), "note");
         y_strlist(r, y_get(r, vn, "emits"), "emits", &s->emits);
+        parse_uses(r, y_get(r, vn, "uses"), s->id, &s->uses, &s->n_uses);
     }
 }
 
@@ -269,6 +320,7 @@ int model_load(const char *path, SgModel *m, StrList *errors) {
     y_strlist(&r, y_get(&r, root, "sends"), "sends", &m->sends);
 
     parse_hal(&r, y_get(&r, root, "hal"), m);
+    parse_buses(&r, y_get(&r, root, "buses"), m);
     parse_states(&r, y_get(&r, root, "states"), m);
     parse_actions(&r, y_get(&r, root, "actions"), m);
     parse_services(&r, y_get(&r, root, "services"), m);

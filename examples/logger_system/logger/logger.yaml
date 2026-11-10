@@ -38,7 +38,14 @@ actions:
   report_full: { stub: true, note: "send LOG_FULL to the device" }
 
 services:
-  storage: { stub: true, emits: [DISK_FULL], note: "watch free space; emit DISK_FULL below 1 MB" }
+  storage:
+    stub: true
+    emits: [DISK_FULL]
+    note: "watch free space; emit DISK_FULL below 1 MB"
+    uses: [ { comm: spi, bus: spi0, cs: GPIO10 } ]
+
+buses:
+  - { id: spi0, comm: spi, sck: GPIO36, mosi: GPIO35, miso: GPIO37 }
 
 steps:
   - { id: step0, goal: "Count ticks; report full after 1000", status: active }

@@ -400,6 +400,23 @@ sed -i 's/language: c }/language: rust }/' logger/logger.yaml
 expect_sys "system: a machine in another language" "logger is rust but the system is c"
 
 setup_sys
+sed -i 's/cs: GPIO10/cs: GPIO3/' logger/logger.yaml
+expect_sys "hardware: SD chip select on the I2C data pin, across machines" "pin GPIO3 is used twice: bus i2c0 sda and logger.storage"
+
+setup_sys
+sed -i 's/uses: \[ { comm: gpio, pin: GPIO13 } \]/uses: [ { comm: i2c, bus: i2c0, addr: 0x28 } ]/' device/device.yaml
+printf 'buses:\n  - { id: i2c0, comm: i2c, sda: GPIO3, scl: GPIO4 }\n' >> device/device.yaml
+expect_sys "hardware: two machines claim one I2C address" "address 0x28 on bus i2c0 is claimed twice"
+
+setup_sys
+printf 'buses:\n  - { id: i2c0, comm: i2c, sda: GPIO8, scl: GPIO9 }\n' >> device/device.yaml
+expect_sys "hardware: one bus declared two ways" "bus i2c0 is declared differently in"
+
+setup_sys
+sed -i 's/bus: i2c0, addr: 0x29/bus: i2c1, addr: 0x29/' sampler/sampler.yaml
+expect_sys "hardware: a node uses an undeclared bus" "uses bus i2c1, which is not declared"
+
+setup_sys
 echo "/* tweak */" >> sampler/src/gen/machine.c
 expect_sys "system: one red machine turns the system red" "SYSTEM GATE RED  1 of 3 machines red"
 
