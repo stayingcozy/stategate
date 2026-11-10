@@ -75,6 +75,7 @@ add_executable(stategate
   src/gen_rust.c
   src/manifest.c
   src/ticket.c
+  src/system.c
   src/gate.c)
 target_compile_options(stategate PRIVATE -Wall -Wextra -Wswitch-enum -Werror=implicit-function-declaration)
 target_link_libraries(stategate PRIVATE sgcore cjson)

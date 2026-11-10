@@ -8,7 +8,7 @@
 #include "ydoc.h"
 
 static const char *const ROOT_KEYS[] = {"machine", "events", "hal", "states", "actions",
-                                        "services", "invariants", "steps", NULL};
+                                        "services", "invariants", "steps", "sends", NULL};
 const char *const SG_LANGUAGES[] = {"rust", "c", NULL};
 
 static const char *const MACHINE_KEYS[] = {"id", "version", "language", NULL};
@@ -266,6 +266,7 @@ int model_load(const char *path, SgModel *m, StrList *errors) {
     yaml_node_t *events = y_get(&r, root, "events");
     if (!events) y_err(&r, root, "missing required 'events' list");
     y_strlist(&r, events, "events", &m->events);
+    y_strlist(&r, y_get(&r, root, "sends"), "sends", &m->sends);
 
     parse_hal(&r, y_get(&r, root, "hal"), m);
     parse_states(&r, y_get(&r, root, "states"), m);
@@ -322,11 +323,16 @@ char *model_find(const char *dir, StrList *errors) {
     while ((e = readdir(d))) {
         size_t n = strlen(e->d_name);
         if (e->d_name[0] == '.') continue;
+        if (!strcmp(e->d_name, "system.yaml")) continue; /* wires machines; it is not one */
         if (n > 5 && !strcmp(e->d_name + n - 5, ".yaml")) sl_push(&found, e->d_name);
     }
     closedir(d);
     if (found.n == 1) return xstrdup(found.v[0]);
-    if (found.n == 0)
+    char sys[1024];
+    snprintf(sys, sizeof sys, "%s/system.yaml", dir);
+    if (found.n == 0 && file_exists(sys))
+        sl_pushf(errors, "%s is a system root (system.yaml): each machine's model is in its own folder", dir);
+    else if (found.n == 0)
         sl_pushf(errors, "no model found: put exactly one *.yaml model file in the project root");
     else
         sl_pushf(errors, "found %d *.yaml files in the project root; pass the model path explicitly", found.n);

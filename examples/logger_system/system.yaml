@@ -1,0 +1,20 @@
+# stategate system: a small data logger as three machines, each in its own folder.
+# Channels are the only way machines talk; every event a machine receives has a
+# sender here, comes from inside the machine, or is listed under `external`.
+
+system: { id: logger_system, language: c }
+
+machines:
+  - { id: device,  dir: device }    # the supervisor: start, stop, fault
+  - { id: sampler, dir: sampler }   # periodic reads, sends TICK
+  - { id: logger,  dir: logger }    # writes ticks, reports when full
+
+channels:
+  - { from: device,  to: sampler, event: START,    kind: sync }
+  - { from: device,  to: sampler, event: STOP,     kind: sync }
+  - { from: device,  to: logger,  event: START,    kind: sync }
+  - { from: device,  to: logger,  event: STOP,     kind: sync }
+  - { from: sampler, to: logger,  event: TICK,     kind: queue, depth: 64, drop: never }
+  - { from: logger,  to: device,  event: LOG_FULL, kind: queue, depth: 4,  drop: oldest }
+
+external: [BUTTON, FAULT]   # the button ISR and the brown-out detector

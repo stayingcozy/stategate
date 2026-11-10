@@ -6,6 +6,7 @@
 #include "gate.h"
 #include "mcp.h"
 #include "platform.h"
+#include "system.h"
 #include "ticket.h"
 #include "version.h"
 
@@ -24,6 +25,11 @@ static int usage(void) {
             "                     start [<id>] | prompt [<id> | --drafts] | run | next | done <id>\n"
             "                     split <id> \"title\" \"title\" ...   (start and split: architect only)\n"
             "  export mermaid     print the machine as a Mermaid state diagram\n"
+            "\n"
+            "In a folder with system.yaml (several machines, each in its own folder):\n"
+            "  validate | gen | gate [--release] | init | export mermaid\n"
+            "                     the wiring checks, then the same command in every machine's folder\n"
+            "\n"
             "  mcp                serve the AI steps as MCP tools over stdin/stdout\n"
             "  mcp config         the MCP server entry for this project, as JSON for any MCP client\n"
             "  ai ...             fill | work | connect | check: Claude Code over the stategate MCP server\n");
@@ -51,6 +57,8 @@ int main(int argc, char **argv) {
 
     StrList errors = {0};
     char *found = NULL;
+    /* A system root: system.yaml wires machines that live in their own folders. */
+    if (!model && file_exists(SYSTEM_PATH)) return cmd_system(cmd, argc - i, argv + i, argv[0]);
     if (!strcmp(cmd, "mcp") && i < argc && !strcmp(argv[i], "config")) return cmd_mcp_config(argv[0]);
     if (!strcmp(cmd, "ai")) return cmd_ai(argc - i, argv + i, argv[0]);
     if (!strcmp(cmd, "ticket")) {

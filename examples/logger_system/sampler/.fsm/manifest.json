@@ -1,0 +1,19 @@
+{
+  "generator": "stategate",
+  "model": "sampler.yaml",
+  "model_hash": "2bc44595a3e5fe19d708ebd55b7d9c3730fe0bbfe15a421941446ec65f2676e3",
+  "files": {
+    "CMakeLists.txt": "8fa9e21580ecf6de79e755c166d942dbed382071aaa58c8b69f3311d61ecb60f",
+    "src/gen/safe_hal.h": "2f052e0564b509f1c32739479b75999f7c7e35b609fd2c791dd67a5036ce0c8b",
+    "src/gen/hal.h": "747a583345a9a7f0c1dd9815e2fb9da531074d6ace56aeb3cf3be249b141af51",
+    "src/gen/safe_hal.c": "dd4185e0430f8115f859da3835ea131e5c99013fb8252ff23b1f7dd35f5f3d1b",
+    "src/gen/fake.h": "cbe28537a472b3eb92226da656315561b0742483325a8574b7e8dd284a2d2121",
+    "src/gen/fake.c": "e716c6059d4c8dbc92c34a56218dbfc4c141e66bcc532a71a9253d58c1c8f437",
+    "src/gen/machine.h": "db48e84ee0ee6e63b9d54e9e27addada3e4e6f28e9a4deae25688cc8eac0d138",
+    "src/gen/nodes.h": "51ac9f112bf2a453ff6a8c45102985cefa61850dd39a6cc402db12e9f6cabb36",
+    "src/gen/machine.c": "6f52a713133c01853777d7f979f5d1313ac549ddd25eb92ed8d5f6d0dc19b545",
+    "tests/transitions.c": "efde0aa1fa757444fbb4f01ef1ccf1a6d14669c0beab9e56511a0fa801492b6d",
+    "tests/invariants.c": "44fa28cc681f6b468f8f32f95d032767cfa2f356daf963dbe7f4a5919f59c836",
+    "examples/sim.c": "8382a04d1eaf69a6e48d98f10cd3470072690f326a93a4debe346666b958ac0f"
+  }
+}

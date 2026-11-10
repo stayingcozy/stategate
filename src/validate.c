@@ -41,6 +41,11 @@ void check_statechart(const SgModel *m, StrList *e) {
     if (!is_snake_ident(m->id)) sl_pushf(e, "machine id '%s' must be lower_snake_case", m->id);
 
     if (m->events.n == 0) sl_pushf(e, "model declares no events");
+    for (int i = 0; i < m->sends.n; i++) {
+        if (!is_upper_snake(m->sends.v[i])) sl_pushf(e, "sent event '%s' must be UPPER_SNAKE_CASE", m->sends.v[i]);
+        for (int j = 0; j < i; j++)
+            if (!strcmp(m->sends.v[i], m->sends.v[j])) sl_pushf(e, "sent event %s is listed twice", m->sends.v[i]);
+    }
     for (int i = 0; i < m->events.n; i++) {
         if (!is_upper_snake(m->events.v[i])) sl_pushf(e, "event '%s' must be UPPER_SNAKE_CASE", m->events.v[i]);
         for (int j = 0; j < i; j++)

@@ -1100,6 +1100,10 @@ static void ed_rename_selection(void) {
 /* A new model: the black dot and one state that loops back on itself. */
 static void new_model(void) {
     if (app.model_path) return;
+    if (file_exists("system.yaml")) {
+        snprintf(E.msg, sizeof E.msg, "This folder holds system.yaml: open one of its machine folders instead.");
+        return;
+    }
     const char *base = strrchr(app.project, '/') ? strrchr(app.project, '/') + 1 : app.project;
     char mid[64];
     size_t n = 0;
