@@ -33,8 +33,8 @@ states:
     layout: { x: 660, y: 120 }
 
 actions:
-  start_all: { note: "send START to the sampler and the logger; light the LED", uses: [ { comm: gpio, pin: GPIO13 } ] }
-  stop_all: { note: "send STOP to the sampler and the logger" }
+  start_all: { emits: [START], note: "send START to the sampler and the logger; light the LED", uses: [ { comm: gpio, pin: GPIO13 } ] }
+  stop_all: { emits: [STOP], note: "send STOP to the sampler and the logger" }
 
 invariants:
   - { id: inv.fault_latches, locked: true, kind: every_state_handles, event: FAULT, target: device.Fault }

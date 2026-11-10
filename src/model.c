@@ -17,7 +17,7 @@ static const char *const STATE_KEYS[] = {"id", "name", "initial", "entry", "exit
 static const char *const AFTER_KEYS[] = {"ms", "event", NULL};
 static const char *const LAYOUT_KEYS[] = {"x", "y", NULL};
 static const char *const TRANS_KEYS[] = {"target", NULL};
-static const char *const ACTION_KEYS[] = {"stub", "locked", "note", "uses", NULL};
+static const char *const ACTION_KEYS[] = {"stub", "locked", "note", "emits", "uses", NULL};
 static const char *const SERVICE_KEYS[] = {"stub", "locked", "fidelity", "emits", "note", "uses", NULL};
 static const char *const USE_KEYS[] = {"comm", "bus", "addr", "cs", "pin", NULL};
 static const char *const BUS_KEYS[] = {"id", "comm", "via", "hz", "sda", "scl", "sck", "mosi", "miso", "tx", "rx", NULL};
@@ -157,6 +157,7 @@ static void parse_actions(YReader *r, yaml_node_t *map, SgModel *m) {
         a->stub = y_bool(r, y_get(r, vn, "stub"), "stub", 0);
         a->locked = y_bool(r, y_get(r, vn, "locked"), "locked", 0);
         a->note = y_str(r, y_get(r, vn, "note"), "note");
+        y_strlist(r, y_get(r, vn, "emits"), "emits", &a->emits);
         parse_uses(r, y_get(r, vn, "uses"), a->id, &a->uses, &a->n_uses);
     }
 }
@@ -202,7 +203,8 @@ static void parse_invariants(YReader *r, yaml_node_t *seq, SgModel *m) {
         if (!strcmp(v->kind_name, "every_state_handles")) v->kind = INV_EVERY_STATE_HANDLES;
         else if (!strcmp(v->kind_name, "max_time_in_state")) v->kind = INV_MAX_TIME_IN_STATE;
         else if (!strcmp(v->kind_name, "hal_clamp")) v->kind = INV_HAL_CLAMP;
-        else y_err(r, in, "invariant %s: kind must be every_state_handles, max_time_in_state or hal_clamp", v->id);
+        else if (!strcmp(v->kind_name, "waits_for")) v->kind = INV_WAITS_FOR;
+        else y_err(r, in, "invariant %s: kind must be every_state_handles, max_time_in_state, hal_clamp or waits_for", v->id);
         v->event = y_str(r, y_get(r, in, "event"), "event");
         v->target = y_str(r, y_get(r, in, "target"), "target");
         v->state = y_str(r, y_get(r, in, "state"), "state");
@@ -220,6 +222,10 @@ static void parse_invariants(YReader *r, yaml_node_t *seq, SgModel *m) {
             break;
         case INV_HAL_CLAMP:
             if (!v->call || v->max < 0) y_err(r, in, "invariant %s needs 'call' and a non-negative 'max'", v->id);
+            break;
+        case INV_WAITS_FOR:
+            if (!v->state || !v->event || v->limit_ms <= 0)
+                y_err(r, in, "invariant %s needs 'state', 'event' (the reply) and a positive 'limit_ms'", v->id);
             break;
         case INV_UNKNOWN:
             break;

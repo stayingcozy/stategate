@@ -32,6 +32,7 @@ buses:
 actions:
   read_and_send:
     stub: true
+    emits: [TICK]
     note: "read every sensor, stamp the tick, send TICK"
     uses: [ { comm: i2c, bus: i2c0, addr: 0x28 }, { comm: i2c, bus: i2c0, addr: 0x29 } ]
 

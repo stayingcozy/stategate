@@ -124,13 +124,25 @@ void check_statechart(const SgModel *m, StrList *e) {
         const Action *a = &m->actions[i];
         if (!is_snake_ident(a->id)) sl_pushf(e, "action id '%s' must be lower_snake_case", a->id);
         if (!action_used(m, a->id)) sl_pushf(e, "action %s is declared but no state uses it", a->id);
+        for (int k = 0; k < a->emits.n; k++)
+            if (!sl_contains(&m->sends, a->emits.v[k]))
+                sl_pushf(e, "action %s emits %s, which is not under 'sends' (an action emits only events for other machines)", a->id,
+                         a->emits.v[k]);
     }
     for (int i = 0; i < m->n_services; i++) {
         const Service *s = &m->services[i];
         if (!is_snake_ident(s->id)) sl_pushf(e, "service id '%s' must be lower_snake_case", s->id);
         if (!service_used(m, s->id)) sl_pushf(e, "service %s is declared but no state invokes it", s->id);
         for (int k = 0; k < s->emits.n; k++)
-            if (model_event_index(m, s->emits.v[k]) < 0) sl_pushf(e, "service %s emits unknown event %s", s->id, s->emits.v[k]);
+            if (model_event_index(m, s->emits.v[k]) < 0 && !sl_contains(&m->sends, s->emits.v[k]))
+                sl_pushf(e, "service %s emits unknown event %s", s->id, s->emits.v[k]);
+    }
+    /* Every sent event has a node that sends it, so scope can be checked. */
+    for (int i = 0; i < m->sends.n; i++) {
+        int by = 0;
+        for (int k = 0; k < m->n_actions; k++) by |= sl_contains(&m->actions[k].emits, m->sends.v[i]);
+        for (int k = 0; k < m->n_services; k++) by |= sl_contains(&m->services[k].emits, m->sends.v[i]);
+        if (!by) sl_pushf(e, "%s is under 'sends' but no action or service lists it in 'emits'", m->sends.v[i]);
     }
 
     int active = 0;
@@ -199,6 +211,25 @@ void check_model_invariants(const SgModel *m, StrList *e) {
             if (!h) { sl_pushf(e, "%s: hal call %s is not declared under 'hal'", v->id, v->call); break; }
             long cap = !strcmp(h->arg, "u8") ? 255L : !strcmp(h->arg, "u16") ? 65535L : 2147483647L;
             if (v->max > cap) sl_pushf(e, "%s: max %ld does not fit %s", v->id, v->max, h->arg);
+            break;
+        }
+        case INV_WAITS_FOR: {
+            /* A state that waits for a reply must also give up waiting. */
+            const State *s = model_state(m, v->state);
+            if (!s) { sl_pushf(e, "%s: unknown state %s", v->id, v->state); break; }
+            if (model_event_index(m, v->event) < 0) { sl_pushf(e, "%s: unknown event %s", v->id, v->event); break; }
+            const char *t = state_target(s, v->event);
+            if (!t) sl_pushf(e, "%s violated: %s waits for %s but does not handle it", v->id, v->state, v->event);
+            if (!s->has_after) {
+                sl_pushf(e, "%s violated: %s waits for %s with no 'after' timeout (add after: { ms: %ld, event: ... })", v->id,
+                         v->state, v->event, v->limit_ms);
+                break;
+            }
+            if (s->after_ms > v->limit_ms)
+                sl_pushf(e, "%s violated: %s gives up after %ld ms, later than its %ld ms limit", v->id, v->state, s->after_ms, v->limit_ms);
+            const char *to = state_target(s, s->after_event);
+            if (to && !strcmp(to, v->state))
+                sl_pushf(e, "%s violated: the timeout %s keeps %s waiting", v->id, s->after_event, v->state);
             break;
         }
         case INV_UNKNOWN:

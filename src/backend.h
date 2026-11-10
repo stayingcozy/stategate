@@ -12,7 +12,7 @@ typedef struct {
     const char *ext;   /* source extension of node files, e.g. ".rs" */
     void (*gen)(const SgModel *m, GenSet *out);
     /* Gate check 6: no catch-all branch in generated dispatch. */
-    void (*check_wildcards)(const GenSet *g, StrList *errors);
+    void (*check_wildcards)(const SgModel *m, const GenSet *g, StrList *errors);
     /* Gate check 11: builds and runs the project's tests. */
     void (*run_tests)(StrList *errors, StrList *notes);
     /* Build outputs `stategate init` adds to .gitignore; NULL-terminated. */

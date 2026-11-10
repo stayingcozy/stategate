@@ -1,7 +1,7 @@
 {
   "generator": "stategate",
   "model": "logger.yaml",
-  "model_hash": "0ef329ff28d69d7f373e16248841dbad8d46db3701320c3fd3f2bcf1f39b8e4f",
+  "model_hash": "9d6fd24c45468c3daf9788c576b908742aabaeabd7d102d9fdde96ead6d20b60",
   "files": {
     "CMakeLists.txt": "cd3808ffdb9ba1622545897112e79d4d389133655f8b455a51cb7bef5df4fba3",
     "src/gen/safe_hal.h": "2d839f55d7fa1036c0d2fb25fd1406a2bd8a780641e47262fc7ade16bec8b598",
@@ -14,7 +14,7 @@
     "src/gen/machine.c": "52122ef449088e79e0ccd239ceae34fb394faaceb5da3aaee0f335685e5e23fe",
     "tests/transitions.c": "34b62ea5c10863a6dbbd1bb36d2417f017cd3c9d363ed7bc293088cad137c846",
     "tests/invariants.c": "64ee9afb302f660416454a4fb2451da4540062f8ff50e96edcf4cd9c955391f4",
-    "src/gen/trace.h": "926c17cf916fca9d359b9779a4d85ee4b87445726ff6a2fbb6d6df9e0ebef72d",
+    "src/gen/trace.h": "e8e2280837e59d1ef817ada3c5db4ff7e98d7ff4d96a7cf0fef2bf5f5aaa60df",
     "examples/sim.c": "6f0bc34f146dff90445a837d148b94b840a396ff7ab3b7d68dc21a648879c361"
   }
 }

@@ -78,6 +78,10 @@ char *locked_canonical(const SgModel *m) {
             if (sl_contains(&m->states[s].entry, a->id)) sb_printf(&b, "%s:entry,", m->states[s].id);
             if (sl_contains(&m->states[s].exit, a->id)) sb_printf(&b, "%s:exit,", m->states[s].id);
         }
+        if (a->emits.n) { /* only when present, so older sign-offs still match */
+            sb_puts(&b, " emits=");
+            for (int k = 0; k < a->emits.n; k++) sb_printf(&b, "%s,", a->emits.v[k]);
+        }
         sb_puts(&b, "\n");
     }
     for (int i = 0; i < m->n_services; i++) {
@@ -479,7 +483,7 @@ int cmd_gate(const char *model_path, int release) {
             break;
         }
         case C_DRIFT: check_drift(&m, &g, e); break;
-        case C_WILDCARD: backend_for(&m)->check_wildcards(&g, e); break;
+        case C_WILDCARD: backend_for(&m)->check_wildcards(&m, &g, e); break;
         case C_TRACE: check_traces(&m, e); break;
         case C_STUBS: stub_count = check_stubs(&m, release, e, &stubs); break;
         case C_SCOPE: check_scope(&m, &g, t, e, &notes[c]); break;
@@ -752,6 +756,8 @@ int cmd_export_mermaid(const char *model_path) {
         const Invariant *v = &m.invariants[i];
         if (v->kind == INV_MAX_TIME_IN_STATE)
             printf("    note right of %s : %s max %ld ms\n", model_state(&m, v->state)->name, v->id, v->limit_ms);
+        if (v->kind == INV_WAITS_FOR)
+            printf("    note right of %s : %s waits for %s, at most %ld ms\n", model_state(&m, v->state)->name, v->id, v->event, v->limit_ms);
     }
     return 0;
 }

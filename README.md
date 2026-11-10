@@ -110,8 +110,10 @@ channels:
 external: [BUTTON, FAULT]   # from outside: an ISR, the phone
 ```
 
-A machine lists what it sends under `sends:` in its own model. At the system
-root, `stategate validate` checks the wiring:
+A machine lists what it sends under `sends:` in its own model, and each node
+that sends one lists it under `emits:` (`start_all: { emits: [START] }`). In C
+the gate fails a node file that calls `<m>_send_<event>` for an event its node
+does not list. At the system root, `stategate validate` checks the wiring:
 
 - every channel's sender lists the event under `sends`, and its receiver
   declares it under `events`, so every receiving state must handle or ignore it
@@ -468,6 +470,7 @@ Checks run in order and stop at the first failure.
 | `every_state_handles` | any FAULT goes to Off | check 3 on the model, plus a generated test per state |
 | `max_time_in_state` | Nudging lasts at most 2000 ms | a generated watchdog in `Machine::tick`, plus a generated test |
 | `hal_clamp` | intensity is at most 3 | the generated `SafeHal`, the only HAL handle node logic receives, plus a generated test |
+| `waits_for` | Calibrating waits for CALIBRATED at most 2000 ms | check 3: the state handles the reply and has an `after` timeout no later than `limit_ms` that leaves the state, plus generated tests for both |
 
 ## Known limits
 

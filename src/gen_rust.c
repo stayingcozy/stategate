@@ -1,5 +1,6 @@
 #include "gen_rust.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -507,6 +508,28 @@ static void gen_tests(const SgModel *m, GenSet *g) {
                       "    hal.%s(%s);\n"
                       "    assert_eq!(probe.borrow().last(\"%s\"), Some(%ld));\n}\n",
                       v->id, v->call, v->max, vid, v->call, v->max, v->call, rust_max(h ? h->arg : "u8"), v->call, v->max);
+        } else if (v->kind == INV_WAITS_FOR) {
+            char *sid = id_to_snake(v->state);
+            const State *s = model_state(m, v->state);
+            const char *reply_to = s ? state_target(s, v->event) : NULL;
+            char *evl = xstrdup(v->event);
+            for (char *c = evl; *c; c++) *c = (char)tolower((unsigned char)*c);
+            sb_printf(&b,
+                      "\n/// @covers %s: %s takes %s\n#[test]\nfn %s__%s_takes_%s() {\n"
+                      "    let mut hal = hal();\n    let mut m = Machine::at(State::%s, 0);\n"
+                      "    m.send(Event::%s, &mut hal);\n    assert_eq!(m.state(), State::%s);\n}\n",
+                      v->id, v->state, v->event, vid, sid, evl, state_name(m, v->state), ev(v->event),
+                      state_name(m, reply_to ? reply_to : v->state));
+            sb_printf(&b,
+                      "\n/// @covers %s: %s gives up on %s by %ld ms\n#[test]\nfn %s__%s_gives_up_by_%ld_ms() {\n"
+                      "    let (fake, probe) = FakeHal::new();\n    let mut hal = SafeHal::new(fake);\n"
+                      "    let mut m = Machine::at(State::%s, 0);\n"
+                      "    probe.borrow_mut().now_ms = %ld;\n    m.tick(&mut hal);\n"
+                      "    assert_ne!(m.state(), State::%s);\n}\n",
+                      v->id, v->state, v->event, v->limit_ms, vid, sid, v->limit_ms, state_name(m, v->state), v->limit_ms,
+                      state_name(m, v->state));
+            free(evl);
+            free(sid);
         }
         free(vid);
     }
@@ -566,7 +589,8 @@ void gen_rust(const SgModel *m, GenSet *out) {
 
 /* ---- gate checks for Rust projects ---- */
 
-void rust_check_wildcards(const GenSet *g, StrList *e) {
+void rust_check_wildcards(const SgModel *m, const GenSet *g, StrList *e) {
+    (void)m; /* Rust machines send nothing to other machines yet */
     for (int i = 0; i < g->n; i++) {
         const GenFile *f = &g->v[i];
         if (f->scaffold) continue;

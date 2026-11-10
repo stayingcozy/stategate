@@ -771,15 +771,18 @@ static void draw_nodes(void) {
             text(line, x, y, small, QUIET);
         }
     }
-    /* Locked max-time invariants hang under their state. */
+    /* Time invariants (max time, waits_for) hang under their state. */
     for (int i = 0; i < m->n_invariants; i++) {
         const Invariant *v = &m->invariants[i];
-        if (v->kind != INV_MAX_TIME_IN_STATE) continue;
+        if (v->kind != INV_MAX_TIME_IN_STATE && v->kind != INV_WAITS_FOR) continue;
         const State *s = model_state(m, v->state);
         if (!s) continue;
         Rectangle r = node_rect(s);
         char line[160];
-        snprintf(line, sizeof line, "locked: at most %ld ms (%s)", v->limit_ms, v->id);
+        if (v->kind == INV_WAITS_FOR)
+            snprintf(line, sizeof line, "waits for %s, gives up by %ld ms (%s)", v->event, v->limit_ms, v->id);
+        else
+            snprintf(line, sizeof line, "locked: at most %ld ms (%s)", v->limit_ms, v->id);
         text(line, r.x + 4 * app.zoom, r.y + r.height + 6 * app.zoom, 13.0f * app.ui * app.zoom, LOCKED);
     }
 }
