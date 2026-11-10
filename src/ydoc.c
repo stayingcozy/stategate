@@ -108,9 +108,11 @@ int y_bool(YReader *r, yaml_node_t *n, const char *what, int def) {
 long y_int(YReader *r, yaml_node_t *n, const char *what, long def) {
     if (!n) return def;
     if (y_is_scalar(n)) {
+        const char *t = scalar_text(n);
+        int hex = t[0] == '0' && (t[1] == 'x' || t[1] == 'X'); /* 0x28: I2C addresses */
         char *end;
-        long v = strtol(scalar_text(n), &end, 10);
-        if (*scalar_text(n) && !*end) return v;
+        long v = strtol(t, &end, hex ? 16 : 10);
+        if (*t && !*end) return v;
     }
     y_err(r, n, "%s must be an integer", what);
     return def;

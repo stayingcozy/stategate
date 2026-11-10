@@ -53,6 +53,7 @@ add_library(sgcore STATIC
   src/ydoc.c
   src/model.c
   src/medit.c
+  src/resources.c
   src/validate.c)
 target_include_directories(sgcore PUBLIC src)
 target_compile_definitions(sgcore PUBLIC _GNU_SOURCE)

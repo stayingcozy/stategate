@@ -22,10 +22,32 @@ typedef struct {
     int line;
 } State;
 
+/* Hardware a node touches. stategate knows no parts: only the comm type,
+ * the bus, and an address or pin, enough to catch two nodes claiming the
+ * same pin or the same address on one bus. */
+typedef struct {
+    char *comm; /* i2c | spi | uart | gpio */
+    char *bus;  /* a bus id from `buses` (not for gpio) */
+    long addr;  /* i2c: 7-bit address, -1 when absent */
+    char *cs;   /* spi: chip-select pin */
+    char *pin;  /* gpio */
+    int line;
+} Resource;
+
+/* A bus and the pins it holds. A bus behind a mux names its parent with
+ * `via` and holds no pins of its own. */
+typedef struct {
+    char *id, *comm, *via;
+    StrList roles, pins; /* parallel: "sda" -> "GPIO3" */
+    int line;
+} Bus;
+
 typedef struct {
     char *id;
     int stub, locked;
     char *note;
+    Resource *uses;
+    int n_uses;
     int line;
 } Action;
 
@@ -35,6 +57,8 @@ typedef struct {
     char *fidelity;
     char *note;
     StrList emits;
+    Resource *uses;
+    int n_uses;
     int line;
 } Service;
 
@@ -77,6 +101,8 @@ typedef struct {
     StrList sends; /* events this machine sends to others (system.yaml channels) */
     HalCall *hal;
     int n_hal;
+    Bus *buses;
+    int n_buses;
     State *states;
     int n_states;
     Action *actions;

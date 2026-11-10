@@ -33,7 +33,7 @@ states:
     layout: { x: 660, y: 120 }
 
 actions:
-  start_all: { stub: true, note: "send START to the sampler and the logger" }
+  start_all: { stub: true, note: "send START to the sampler and the logger; light the LED", uses: [ { comm: gpio, pin: GPIO13 } ] }
   stop_all: { stub: true, note: "send STOP to the sampler and the logger" }
 
 invariants:

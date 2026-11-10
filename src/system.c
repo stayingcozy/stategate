@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 
 #include "platform.h"
+#include "resources.h"
 #include "validate.h"
 #include "ydoc.h"
 
@@ -215,6 +216,47 @@ void system_check(const SgSystem *s, StrList *e) {
                          sm->id, ev, ev);
         }
     }
+
+    /* Hardware across machines: a bus several machines use must be declared
+     * the same way in each, and no pin or address is claimed twice. */
+    Bus *buses = NULL;
+    int nb = 0, cap = 0, ncl = 0;
+    Claim *claims = NULL;
+    for (int i = 0; i < s->n_machines; i++) {
+        const SysMachine *sm = &s->machines[i];
+        if (!sm->loaded) continue;
+        for (int b = 0; b < sm->model.n_buses; b++) {
+            const Bus *nbus = &sm->model.buses[b];
+            const Bus *have = NULL;
+            for (int k = 0; k < nb; k++)
+                if (!strcmp(buses[k].id, nbus->id)) have = &buses[k];
+            if (have) {
+                int same = !strcmp(have->comm, nbus->comm) && !strcmp(have->via ? have->via : "", nbus->via ? nbus->via : "")
+                           && have->pins.n == nbus->pins.n;
+                for (int p = 0; same && p < nbus->pins.n; p++) {
+                    int found = 0;
+                    for (int q = 0; q < have->pins.n; q++)
+                        found |= !strcmp(have->roles.v[q], nbus->roles.v[p]) && !strcmp(have->pins.v[q], nbus->pins.v[p]);
+                    same = found;
+                }
+                if (!same) sl_pushf(e, "bus %s is declared differently in %s than in another machine; declare it the same way everywhere", nbus->id, sm->id);
+                continue;
+            }
+            if (nb == cap) { cap = cap ? cap * 2 : 8; buses = xrealloc(buses, sizeof(Bus) * (size_t)cap); }
+            buses[nb++] = *nbus;
+        }
+        Claim *mc;
+        int n = model_claims(&sm->model, &mc);
+        claims = xrealloc(claims, sizeof(Claim) * (size_t)(ncl + n + 1));
+        memcpy(claims + ncl, mc, sizeof(Claim) * (size_t)n);
+        ncl += n;
+        free(mc);
+    }
+    /* A loaded machine already passed its own hardware checks, so anything
+     * reported here comes from two machines together. */
+    resources_check(buses, nb, claims, ncl, e);
+    free(buses);
+    free(claims);
 
     for (int k = 0; k < s->external.n; k++) {
         int used = 0;

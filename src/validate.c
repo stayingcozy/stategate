@@ -2,7 +2,10 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "resources.h"
 
 static int is_snake_ident(const char *s) {
     if (!s || !*s || !(islower((unsigned char)*s) || *s == '_')) return 0;
@@ -153,6 +156,12 @@ void check_statechart(const SgModel *m, StrList *e) {
     if (initials == 1)
         for (int i = 0; i < m->n_states; i++)
             if (!seen[i]) sl_pushf(e, "state %s is unreachable from the initial state", m->states[i].id);
+
+    /* Hardware: buses complete, no pin or address claimed twice. */
+    Claim *claims;
+    int nc = model_claims(m, &claims);
+    resources_check(m->buses, m->n_buses, claims, nc, e);
+    free(claims);
 }
 
 void check_model_invariants(const SgModel *m, StrList *e) {

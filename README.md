@@ -127,6 +127,29 @@ same. `gen` and `init` also run in every folder, and `stategate export mermaid`
 draws the machines and channels. Everything else (tickets, sign-off, the app)
 works in one machine's folder: `stategate -C sampler ticket gen`.
 
+### Hardware: buses and what each node uses
+
+stategate knows nothing about parts. A model declares its buses, and each
+action or service says which bus, address or pin it touches:
+
+```yaml
+buses:
+  - { id: i2c0, comm: i2c, sda: GPIO3, scl: GPIO4 }
+  - { id: mux0_ch0, comm: i2c, via: i2c0 }        # behind a mux: no pins of its own
+  - { id: spi0, comm: spi, sck: GPIO36, mosi: GPIO35, miso: GPIO37 }
+services:
+  imu_read: { uses: [ { comm: i2c, bus: mux0_ch0, addr: 0x28 } ] }
+  sd_write: { uses: [ { comm: spi, bus: spi0, cs: GPIO10 } ] }
+  qt_power: { uses: [ { comm: gpio, pin: GPIO7 } ] }
+```
+
+Validation fails when a pin is used twice (bus lines, chip selects and GPIOs
+together), when two nodes claim one address on one bus or one UART, or when a
+use names a bus that isn't declared or has the wrong comm type. In a system,
+every machine declares the buses it uses, the declarations must agree, and the
+same checks run across all machines. An SD card's chip select left on the I2C
+data line, for example, is an error before anything is powered on.
+
 ## A new project, end to end
 
 Every step is a command, so a future app or an MCP server can drive the same

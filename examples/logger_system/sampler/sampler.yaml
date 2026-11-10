@@ -24,8 +24,16 @@ states:
     entry: [read_and_send]
     layout: { x: 360, y: 120 }
 
+# Hardware: what the nodes touch. stategate checks that no pin or address is
+# claimed twice, here and across every machine in the system.
+buses:
+  - { id: i2c0, comm: i2c, sda: GPIO3, scl: GPIO4 }
+
 actions:
-  read_and_send: { stub: true, note: "read every sensor, stamp the tick, send TICK" }
+  read_and_send:
+    stub: true
+    note: "read every sensor, stamp the tick, send TICK"
+    uses: [ { comm: i2c, bus: i2c0, addr: 0x28 }, { comm: i2c, bus: i2c0, addr: 0x29 } ]
 
 steps:
   - { id: step0, goal: "Send a fake TICK every 10 ms", status: active }

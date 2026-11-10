@@ -1,7 +1,7 @@
 {
   "generator": "stategate",
   "model": "device.yaml",
-  "model_hash": "9b63a70027187091dd186121707e8c471a989d5f5158480f1637904046dca221",
+  "model_hash": "f0f1f1676e948b69de46a846c82441e573b421ca658ad020ad96507de475f53e",
   "files": {
     "CMakeLists.txt": "4ace485dc27af67319338e57e0a77e0e691d1b8ccff7ea2246ced3728f319b67",
     "src/gen/safe_hal.h": "6861873eb94e572d71011cf9871833c7822ac6c692bcce79cede05b49f3e51a4",
