@@ -14,7 +14,7 @@
 
 static const char *const ROOT_KEYS[] = {"system", "machines", "channels", "external", NULL};
 static const char *const SYSTEM_KEYS[] = {"id", "language", NULL};
-static const char *const MACHINE_KEYS[] = {"id", "dir", NULL};
+static const char *const MACHINE_KEYS[] = {"id", "dir", "instances", "params", NULL};
 static const char *const CHANNEL_KEYS[] = {"from", "to", "event", "kind", "depth", "drop", "payload", NULL};
 static const char *const DROPS[] = {"never", "oldest", "newest", NULL};
 
@@ -102,6 +102,29 @@ int system_load(const char *path, SgSystem *s, StrList *errors) {
             sm->line = y_line(mn);
             sm->id = y_str(&r, y_get(&r, mn, "id"), "machine id");
             sm->dir = y_str(&r, y_get(&r, mn, "dir"), "machine dir");
+            sm->instances = (int)y_int(&r, y_get(&r, mn, "instances"), "instances", 1);
+            if (sm->instances < 1 || sm->instances > 64) { y_err(&r, mn, "instances must be 1 to 64"); sm->instances = 1; }
+            yaml_node_t *pm = y_get(&r, mn, "params");
+            if (pm && !y_is_map(pm)) y_err(&r, pm, "params maps each param name to one integer per instance");
+            if (y_is_map(pm)) {
+                int np = (int)(pm->data.mapping.pairs.top - pm->data.mapping.pairs.start);
+                sm->param_values = xcalloc((size_t)(np * sm->instances + 1), sizeof(long));
+                int k = 0;
+                for (yaml_node_pair_t *p = pm->data.mapping.pairs.start; p < pm->data.mapping.pairs.top; p++, k++) {
+                    char *name = y_str(&r, y_node(&r, p->key), "param name");
+                    sl_push(&sm->param_names, name ? name : "?");
+                    free(name);
+                    yaml_node_t *vals = y_node(&r, p->value);
+                    int n = y_is_seq(vals) ? (int)(vals->data.sequence.items.top - vals->data.sequence.items.start) : -1;
+                    if (n != sm->instances) {
+                        y_err(&r, vals, "param %s needs a list of %d integers, one per instance", sm->param_names.v[k], sm->instances);
+                        continue;
+                    }
+                    int i = 0;
+                    for (yaml_node_item_t *it = vals->data.sequence.items.start; it < vals->data.sequence.items.top; it++, i++)
+                        sm->param_values[i * np + k] = y_int(&r, y_node(&r, *it), "param value", 0);
+                }
+            }
             if (!sm->id) { y_err(&r, mn, "machine is missing 'id'"); sm->id = xstrdup("?"); }
             if (!sm->dir) sm->dir = xstrdup(sm->id);
             if (!is_ident(sm->id)) y_err(&r, mn, "machine id '%s' must be snake_case", sm->id);
@@ -182,6 +205,12 @@ void system_check(const SgSystem *s, StrList *e) {
         if (!sm->loaded) continue;
         if (strcmp(sm->model.id, sm->id))
             sl_pushf(e, "machine %s: its model says machine id '%s'; the two must match (generated names use it)", sm->id, sm->model.id);
+        for (int k = 0; k < sm->model.params.n; k++)
+            if (!sl_contains(&sm->param_names, sm->model.params.v[k]))
+                sl_pushf(e, "machine %s reads param %s: give it one value per instance under params in system.yaml", sm->id, sm->model.params.v[k]);
+        for (int k = 0; k < sm->param_names.n; k++)
+            if (!sl_contains(&sm->model.params, sm->param_names.v[k]))
+                sl_pushf(e, "machine %s has no param %s (its model lists: params)", sm->id, sm->param_names.v[k]);
         if (strcmp(sm->model.language, s->language))
             sl_pushf(e, "machine %s is %s but the system is %s: one project, one language", sm->id, sm->model.language, s->language);
     }

@@ -22,6 +22,8 @@ void device_hal_log(device_safe_hal_t *hal, const char *msg);
 /* The payload of the event being handled now (opaque bytes, e.g. an encoded
  * protobuf message), or NULL with *len = 0 when it carries none. */
 const void *device_hal_payload(device_safe_hal_t *hal, size_t *len);
+/* Which copy of this machine is running (0 unless system.yaml gives it instances). */
+int device_hal_instance(device_safe_hal_t *hal);
 /* Sends START with an optional payload; the system routes it. */
 void device_send_start(device_safe_hal_t *hal, const void *data, size_t len);
 /* Sends STOP with an optional payload; the system routes it. */

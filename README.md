@@ -95,7 +95,7 @@ at configure time; set `STATEGATE_UNITY_DIR` to a local copy to build offline.
 A device with separate tasks (sensors, storage, radio) is several small
 machines that talk through channels. `system.yaml` at the root names each
 machine's folder, and each folder is an ordinary stategate project with its own
-model, generated code, tickets and gate. `examples/logger_system` has three:
+model, generated code, tickets and gate. `examples/logger_system` has four, and the sensor runs as two instances:
 
 ```yaml
 system: { id: logger_system, language: c }
@@ -143,6 +143,19 @@ logger_system_init(&sys, &boards);           // starts every machine
 logger_system_post_device(&sys, DEVICE_EV_BUTTON, NULL, 0);   // an external event
 logger_system_step_sampler(&sys);             // in the sampler's task, every 10 ms
 ```
+
+A machine can run as several instances, each with its own state, for example
+one per sensor. Its model lists the integers each instance reads under
+`params:`, and system.yaml gives one value per instance:
+
+```yaml
+  - { id: sensor, dir: sensor, instances: 2, params: { mux_ch: [0, 1] } }
+```
+
+A node reads them with `sensor_hal_param_mux_ch(hal)` and
+`sensor_hal_instance(hal)`. An event sent to the machine goes to every instance
+(`post_sensor_at` targets one), and each instance's log lines start with its
+number.
 
 A `sync` channel delivers inside the sender's call. A `queue` holds up to
 `depth` events until the receiver's step function runs. On ESP-IDF that's a

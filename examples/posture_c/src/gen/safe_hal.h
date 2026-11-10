@@ -20,5 +20,7 @@ void posture_hal_stim_set_intensity(posture_safe_hal_t *hal, uint8_t value);
 /* The payload of the event being handled now (opaque bytes, e.g. an encoded
  * protobuf message), or NULL with *len = 0 when it carries none. */
 const void *posture_hal_payload(posture_safe_hal_t *hal, size_t *len);
+/* Which copy of this machine is running (0 unless system.yaml gives it instances). */
+int posture_hal_instance(posture_safe_hal_t *hal);
 
 #endif

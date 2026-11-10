@@ -169,7 +169,8 @@ static void gen_router_h(const SgSystem *s, GenSet *g) {
               " * On a device, give each machine its own task (or share one) and call its\n"
               " * step function regularly, e.g. every 10 ms. A step handles every event\n"
               " * queued for the machine, in channel order, then ticks it. A sync channel\n"
-              " * delivers at once, inside the sender's call, on the sender's task. */\n"
+              " * delivers at once, inside the sender's call, on the sender's task. An event\n"
+              " * for a machine with several instances goes to every instance. */\n"
               "#ifndef %s_ROUTER_H\n#define %s_ROUTER_H\n\n#include \"sg_queue.h\"\n\n",
               S, up(S), up(S));
     for (int i = 0; i < s->n_machines; i++)
@@ -177,21 +178,27 @@ static void gen_router_h(const SgSystem *s, GenSet *g) {
                   s->machines[i].dir);
     sb_printf(&b,
               "\n/* The largest payload any channel carries, in bytes. */\n#define %s_PAYLOAD_MAX %ld\n\n"
-              "typedef struct {\n    int event;\n    uint16_t len;\n    uint8_t data[%s_PAYLOAD_MAX];\n} %s_msg_t;\n\n"
-              "#define %s_CHANNEL_COUNT %d\n",
-              up(S), pmax, up(S), S, up(S), s->n_channels);
+              "typedef struct {\n    int event;\n    uint16_t len;\n    uint8_t data[%s_PAYLOAD_MAX];\n} %s_msg_t;\n\n",
+              up(S), pmax, up(S), S);
+    for (int i = 0; i < s->n_machines; i++)
+        sb_printf(&b, "#define %s_%s_INSTANCES %d\n", up(S), up(s->machines[i].id), s->machines[i].instances);
+    sb_printf(&b, "\n#define %s_CHANNEL_COUNT %d\n", up(S), s->n_channels);
     for (int i = 0; i < s->n_channels; i++) {
         const Channel *c = &s->channels[i];
         sb_printf(&b, "#define %s_CH_%s_%s_%s %d /* %s */\n", up(S), up(c->from), up(c->to), c->event, i,
                   is_queue(c) ? "queue" : "sync");
     }
-    sb_printf(&b, "\nstruct %s_system;\n\ntypedef struct {\n    struct %s_system *sys;\n    const void *payload;\n    size_t payload_len;\n} %s_slot_t;\n\n", S, S, S);
-    sb_printf(&b, "/* Each machine's board HAL. Their payload and send fields are not used: the\n * router supplies both. */\ntypedef struct {\n");
+    sb_printf(&b,
+              "\nstruct %s_system;\n\ntypedef struct {\n    struct %s_system *sys;\n    int instance;\n"
+              "    const void *payload;\n    size_t payload_len;\n} %s_slot_t;\n\n",
+              S, S, S);
+    sb_printf(&b, "/* Each machine's board HAL, shared by its instances. Their payload, send,\n * instance and param fields are not used: the router supplies them. */\ntypedef struct {\n");
     for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "    %s_hal_t %s;\n", s->machines[i].id, s->machines[i].id);
     sb_printf(&b, "} %s_boards_t;\n\ntypedef struct %s_system {\n    %s_boards_t boards;\n", S, S, S);
     for (int i = 0; i < s->n_machines; i++) {
         const char *m = s->machines[i].id;
-        sb_printf(&b, "    %s_machine_t %s;\n    %s_safe_hal_t %s_hal;\n    %s_slot_t %s_slot;\n", m, m, m, m, S, m);
+        int n = s->machines[i].instances;
+        sb_printf(&b, "    %s_machine_t %s[%d];\n    %s_safe_hal_t %s_hal[%d];\n    %s_slot_t %s_slot[%d];\n", m, m, n, m, m, n, S, m, n);
     }
     sb_printf(&b, "    sg_queue_t queue[%s_CHANNEL_COUNT]; /* sync channels leave theirs unused */\n", up(S));
     for (int i = 0; i < s->n_channels; i++)
@@ -205,11 +212,14 @@ static void gen_router_h(const SgSystem *s, GenSet *g) {
     for (int i = 0; i < s->n_machines; i++) {
         const char *m = s->machines[i].id;
         sb_printf(&b,
-                  "/* Delivers an event to %s now, on the caller's task: for events from\n"
-                  " * outside the system, called from %s's own task. */\n"
-                  "void %s_post_%s(%s_system_t *s, %s_event_t event, const void *data, size_t len);\n"
-                  "void %s_step_%s(%s_system_t *s);\n",
-                  m, m, S, m, S, m, S, m, S);
+                  "/* Delivers an event to %s now (every instance), on the caller's task: for\n"
+                  " * events from outside the system, called from %s's own task. */\n"
+                  "void %s_post_%s(%s_system_t *s, %s_event_t event, const void *data, size_t len);\n",
+                  m, m, S, m, S, m);
+        if (s->machines[i].instances > 1)
+            sb_printf(&b, "/* Delivers an event to one instance of %s. */\nvoid %s_post_%s_at(%s_system_t *s, int instance, %s_event_t event, const void *data, size_t len);\n",
+                      m, S, m, S, m);
+        sb_printf(&b, "void %s_step_%s(%s_system_t *s);\n", S, m, S);
     }
     sb_printf(&b,
               "/* Steps every machine once, in order. For one task, the host tests and the simulator. */\n"
@@ -237,12 +247,42 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
         sb_printf(&b,
                   "\n/* ---- %s: its board HAL behind the router ---- */\n\n"
                   "static uint64_t rt_%s_now_ms(void *ctx) {\n"
-                  "    %s_slot_t *sl = ctx;\n    return sl->sys->boards.%s.now_ms(sl->sys->boards.%s.ctx);\n}\n\n"
-                  "static void rt_%s_log(void *ctx, const char *msg) {\n"
-                  "    %s_slot_t *sl = ctx;\n    sl->sys->boards.%s.log(sl->sys->boards.%s.ctx, msg);\n}\n\n"
+                  "    %s_slot_t *sl = ctx;\n    return sl->sys->boards.%s.now_ms(sl->sys->boards.%s.ctx);\n}\n\n",
+                  m, m, S, m, m);
+        if (sm->instances > 1)
+            sb_printf(&b,
+                      "/* Log lines from an instance start with its number. */\n"
+                      "static void rt_%s_log(void *ctx, const char *msg) {\n"
+                      "    %s_slot_t *sl = ctx;\n    char line[192];\n"
+                      "    snprintf(line, sizeof line, \"[%%d] %%s\", sl->instance, msg);\n"
+                      "    sl->sys->boards.%s.log(sl->sys->boards.%s.ctx, line);\n}\n\n",
+                      m, S, m, m);
+        else
+            sb_printf(&b,
+                      "static void rt_%s_log(void *ctx, const char *msg) {\n"
+                      "    %s_slot_t *sl = ctx;\n    sl->sys->boards.%s.log(sl->sys->boards.%s.ctx, msg);\n}\n\n",
+                      m, S, m, m);
+        sb_printf(&b,
                   "static const void *rt_%s_payload(void *ctx, size_t *len) {\n"
-                  "    %s_slot_t *sl = ctx;\n    *len = sl->payload_len;\n    return sl->payload;\n}\n",
-                  m, m, S, m, m, m, S, m, m, m, S);
+                  "    %s_slot_t *sl = ctx;\n    *len = sl->payload_len;\n    return sl->payload;\n}\n\n"
+                  "static int rt_%s_instance(void *ctx) {\n    return ((%s_slot_t *)ctx)->instance;\n}\n",
+                  m, S, m, S);
+        if (mm->params.n) {
+            sb_printf(&b, "\n/* [instance][param], in the order of %s's model. */\nstatic const int32_t %s_params[%d][%d] = {\n", m, m,
+                      sm->instances, mm->params.n);
+            for (int k = 0; k < sm->instances; k++) {
+                sb_puts(&b, "    {");
+                for (int q = 0; q < mm->params.n; q++) {
+                    long v = 0;
+                    for (int x = 0; x < sm->param_names.n; x++)
+                        if (!strcmp(sm->param_names.v[x], mm->params.v[q])) v = sm->param_values[k * sm->param_names.n + x];
+                    sb_printf(&b, "%s%ld", q ? ", " : "", v);
+                }
+                sb_puts(&b, "},\n");
+            }
+            sb_printf(&b, "};\n\nstatic int32_t rt_%s_param(void *ctx, int index) {\n    return %s_params[((%s_slot_t *)ctx)->instance][index];\n}\n",
+                      m, m, S);
+        }
         for (int k = 0; k < mm->n_hal; k++)
             sb_printf(&b,
                       "\nstatic void rt_%s_%s(void *ctx, %s value) {\n"
@@ -277,14 +317,18 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
     for (int i = 0; i < s->n_machines; i++) {
         const char *m = s->machines[i].id;
         sb_printf(&b,
-                  "\nvoid %s_post_%s(%s_system_t *s, %s_event_t event, const void *data, size_t len) {\n"
-                  "    %s_slot_t *sl = &s->%s_slot;\n"
+                  "\n%svoid %s_post_%s_at(%s_system_t *s, int instance, %s_event_t event, const void *data, size_t len) {\n"
+                  "    %s_slot_t *sl = &s->%s_slot[instance];\n"
                   "    const void *was = sl->payload;\n    size_t was_len = sl->payload_len;\n"
                   "    sl->payload = data;\n    sl->payload_len = len;\n"
-                  "    %s_send(&s->%s, event, &s->%s_hal);\n"
+                  "    %s_send(&s->%s[instance], event, &s->%s_hal[instance]);\n"
                   "    sl->payload = was;\n    sl->payload_len = was_len;\n"
+                  "}\n\n"
+                  "void %s_post_%s(%s_system_t *s, %s_event_t event, const void *data, size_t len) {\n"
+                  "    for (int i = 0; i < %d; i++) %s_post_%s_at(s, i, event, data, len);\n"
                   "}\n",
-                  S, m, S, m, S, m, m, m, m);
+                  s->machines[i].instances > 1 ? "" : "static ", S, m, S, m, S, m, m, m, m, S, m, S, m,
+                  s->machines[i].instances, S, m);
     }
 
     for (int i = 0; i < s->n_machines; i++) {
@@ -317,14 +361,16 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
         const SysMachine *sm = &s->machines[i];
         const char *m = sm->id;
         sb_printf(&b,
-                  "    {\n"
+                  "    for (int i = 0; i < %d; i++) {\n"
                   "        %s_hal_t h;\n        memset(&h, 0, sizeof h);\n"
-                  "        s->%s_slot.sys = s;\n        h.ctx = &s->%s_slot;\n"
-                  "        h.now_ms = rt_%s_now_ms;\n        h.log = rt_%s_log;\n        h.payload = rt_%s_payload;\n",
-                  m, m, m, m, m, m);
+                  "        s->%s_slot[i].sys = s;\n        s->%s_slot[i].instance = i;\n        h.ctx = &s->%s_slot[i];\n"
+                  "        h.now_ms = rt_%s_now_ms;\n        h.log = rt_%s_log;\n        h.payload = rt_%s_payload;\n"
+                  "        h.instance = rt_%s_instance;\n",
+                  sm->instances, m, m, m, m, m, m, m, m);
+        if (sm->model.params.n) sb_printf(&b, "        h.param = rt_%s_param;\n", m);
         for (int k = 0; k < sm->model.n_hal; k++) sb_printf(&b, "        h.%s = rt_%s_%s;\n", sm->model.hal[k].call, m, sm->model.hal[k].call);
         if (sm->model.sends.n) sb_printf(&b, "        h.send = rt_%s_send;\n", m);
-        sb_printf(&b, "        s->%s_hal = %s_safe_hal(h);\n    }\n", m, m);
+        sb_printf(&b, "        s->%s_hal[i] = %s_safe_hal(h);\n    }\n", m, m);
     }
     for (int i = 0; i < s->n_channels; i++) {
         const Channel *c = &s->channels[i];
@@ -332,7 +378,9 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
         sb_printf(&b, "    sg_queue_init(&s->queue[%d], s->storage_%d, sizeof(%s_msg_t), %ld, %s); /* %s -> %s %s */\n", i, i, S,
                   c->depth, drop_enum(c->drop), c->from, c->to, c->event);
     }
-    for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "    %s_start(&s->%s, &s->%s_hal);\n", s->machines[i].id, s->machines[i].id, s->machines[i].id);
+    for (int i = 0; i < s->n_machines; i++)
+        sb_printf(&b, "    for (int i = 0; i < %d; i++) %s_start(&s->%s[i], &s->%s_hal[i]);\n", s->machines[i].instances, s->machines[i].id,
+                  s->machines[i].id, s->machines[i].id);
     sb_puts(&b, "}\n");
 
     for (int i = 0; i < s->n_machines; i++) {
@@ -347,7 +395,7 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
             sb_printf(&b, "    while (sg_queue_pop(&s->queue[%d], &msg)) /* from %s: %s */\n        %s_post_%s(s, (%s_event_t)msg.event, msg.data, msg.len);\n",
                       c, ch->from, ch->event, S, m, m);
         }
-        sb_printf(&b, "    %s_tick(&s->%s, &s->%s_hal);\n}\n", m, m, m);
+        sb_printf(&b, "    for (int i = 0; i < %d; i++) %s_tick(&s->%s[i], &s->%s_hal[i]);\n}\n", s->machines[i].instances, m, m, m);
     }
     sb_printf(&b, "\nvoid %s_step_all(%s_system_t *s) {\n", S, S);
     for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "    %s_step_%s(s);\n", S, s->machines[i].id);
@@ -367,7 +415,10 @@ static void gen_router_test(const SgSystem *s, GenSet *g) {
     SB b;
     sb_init(&b);
     header(&b, "/*");
-    sb_printf(&b, "/* Every queue channel holds its depth and then follows its drop policy. */\n#include \"unity.h\"\n\n#include \"%s.h\"\n", S);
+    sb_printf(&b,
+              "/* Every queue channel holds its depth and then follows its drop policy; every\n"
+              " * instance sees its own number and params. */\n#include \"unity.h\"\n\n#include \"%s.h\"\n",
+              S);
     for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "#include \"../%s/src/gen/fake.h\"\n", s->machines[i].dir);
     sb_puts(&b, "\n");
     for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "static %s_probe_t %s_probe;\n", s->machines[i].id, s->machines[i].id);
@@ -385,10 +436,10 @@ static void gen_router_test(const SgSystem *s, GenSet *g) {
         sl_push(&names, name);
         sb_printf(&b,
                   "\nstatic void %s(void) {\n"
-                  "    for (int i = 0; i < %ld; i++) %s_send_%s(&sys.%s_hal, NULL, 0);\n"
+                  "    for (int i = 0; i < %ld; i++) %s_send_%s(&sys.%s_hal[0], NULL, 0);\n"
                   "    TEST_ASSERT_EQUAL_UINT(%ld, %s_queued(&sys, %d));\n"
                   "    TEST_ASSERT_EQUAL_UINT32(0, %s_dropped(&sys, %d));\n"
-                  "    %s_send_%s(&sys.%s_hal, NULL, 0);\n"
+                  "    %s_send_%s(&sys.%s_hal[0], NULL, 0);\n"
                   "    TEST_ASSERT_EQUAL_UINT(%ld, %s_queued(&sys, %d));\n"
                   "    TEST_ASSERT_EQUAL_UINT32(1, %s_dropped(&sys, %d));\n"
                   "    %s_step_%s(&sys);\n"
@@ -396,6 +447,24 @@ static void gen_router_test(const SgSystem *s, GenSet *g) {
                   "}\n",
                   name, ch->depth, ch->from, lo(ch->event), ch->from, ch->depth, S, c, S, c, ch->from, lo(ch->event), ch->from,
                   ch->depth, S, c, S, c, S, ch->to, S, c);
+    }
+    for (int i = 0; i < s->n_machines; i++) {
+        const SysMachine *sm = &s->machines[i];
+        if (sm->instances < 2 && !sm->model.params.n) continue;
+        char name[256];
+        snprintf(name, sizeof name, "%s__instances_see_their_number_and_params", sm->id);
+        sl_push(&names, name);
+        sb_printf(&b, "\nstatic void %s(void) {\n", name);
+        for (int k = 0; k < sm->instances; k++) {
+            sb_printf(&b, "    TEST_ASSERT_EQUAL_INT(%d, %s_hal_instance(&sys.%s_hal[%d]));\n", k, sm->id, sm->id, k);
+            for (int q = 0; q < sm->model.params.n; q++) {
+                long v = 0;
+                for (int x = 0; x < sm->param_names.n; x++)
+                    if (!strcmp(sm->param_names.v[x], sm->model.params.v[q])) v = sm->param_values[k * sm->param_names.n + x];
+                sb_printf(&b, "    TEST_ASSERT_EQUAL_INT32(%ld, %s_hal_param_%s(&sys.%s_hal[%d]));\n", v, sm->id, sm->model.params.v[q], sm->id, k);
+            }
+        }
+        sb_puts(&b, "}\n");
     }
     sb_puts(&b, "\nint main(void) {\n    UNITY_BEGIN();\n");
     for (int i = 0; i < names.n; i++) sb_printf(&b, "    RUN_TEST(%s);\n", names.v[i]);

@@ -12,6 +12,7 @@ typedef struct {
     void (*log)(void *ctx, const char *msg);
     /* Set by the system router; NULL in a machine on its own. */
     const void *(*payload)(void *ctx, size_t *len);
+    int (*instance)(void *ctx);
     void (*send)(void *ctx, device_out_t event, const void *data, size_t len);
 } device_hal_t;
 

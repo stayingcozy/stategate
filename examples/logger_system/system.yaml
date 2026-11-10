@@ -8,12 +8,14 @@ machines:
   - { id: device,  dir: device }    # the supervisor: start, stop, fault
   - { id: sampler, dir: sampler }   # periodic reads, sends TICK
   - { id: logger,  dir: logger }    # writes ticks, reports when full
+  - { id: sensor,  dir: sensor, instances: 2, params: { mux_ch: [0, 1] } }   # one per mux channel
 
 channels:
   - { from: device,  to: sampler, event: START,    kind: sync }
   - { from: device,  to: sampler, event: STOP,     kind: sync }
   - { from: device,  to: logger,  event: START,    kind: sync }
   - { from: device,  to: logger,  event: STOP,     kind: sync }
+  - { from: device,  to: sensor,  event: START,    kind: sync }
   - { from: sampler, to: logger,  event: TICK,     kind: queue, depth: 64, drop: never, payload: 64 }
   - { from: logger,  to: device,  event: LOG_FULL, kind: queue, depth: 4,  drop: oldest }
 

@@ -1,0 +1,34 @@
+# One orientation sensor. system.yaml runs two of these, each on its own mux channel.
+
+machine: { id: sensor, version: 1, language: c }
+
+events: [START, CALIBRATED]
+params: [mux_ch]   # which I2C mux channel this instance sits on
+
+states:
+  - id: sensor.Off
+    name: Off
+    initial: true
+    on:
+      START: sensor.Calibrating
+    ignore: [CALIBRATED]
+    layout: { x: 60, y: 120 }
+
+  - id: sensor.Calibrating
+    name: Calibrating
+    invoke: [calibrate]
+    on:
+      CALIBRATED: sensor.Ready
+    ignore: [START]
+    layout: { x: 360, y: 120 }
+
+  - id: sensor.Ready
+    name: Ready
+    ignore: [START, CALIBRATED]
+    layout: { x: 660, y: 120 }
+
+services:
+  calibrate: { stub: true, emits: [CALIBRATED], note: "select mux_ch, load stored calibration, report CALIBRATED" }
+
+steps:
+  - { id: step0, goal: "Each sensor reports calibrated", status: active }

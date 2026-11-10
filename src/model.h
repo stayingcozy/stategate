@@ -99,6 +99,7 @@ typedef struct {
     char *language;
     StrList events;
     StrList sends; /* events this machine sends to others (system.yaml channels) */
+    StrList params; /* per-instance integers the nodes read (values in system.yaml) */
     HalCall *hal;
     int n_hal;
     Bus *buses;

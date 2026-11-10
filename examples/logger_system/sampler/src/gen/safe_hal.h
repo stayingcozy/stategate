@@ -21,6 +21,8 @@ void sampler_hal_log(sampler_safe_hal_t *hal, const char *msg);
 /* The payload of the event being handled now (opaque bytes, e.g. an encoded
  * protobuf message), or NULL with *len = 0 when it carries none. */
 const void *sampler_hal_payload(sampler_safe_hal_t *hal, size_t *len);
+/* Which copy of this machine is running (0 unless system.yaml gives it instances). */
+int sampler_hal_instance(sampler_safe_hal_t *hal);
 /* Sends TICK with an optional payload; the system routes it. */
 void sampler_send_tick(sampler_safe_hal_t *hal, const void *data, size_t len);
 

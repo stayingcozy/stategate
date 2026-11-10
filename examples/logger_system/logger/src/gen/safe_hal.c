@@ -14,6 +14,10 @@ const void *logger_hal_payload(logger_safe_hal_t *hal, size_t *len) {
     return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;
 }
 
+int logger_hal_instance(logger_safe_hal_t *hal) {
+    return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
+}
+
 void logger_send_log_full(logger_safe_hal_t *hal, const void *data, size_t len) {
     if (hal->inner.send) hal->inner.send(hal->inner.ctx, LOGGER_OUT_LOG_FULL, data, len);
     else hal->inner.log(hal->inner.ctx, "LOG_FULL: no router, dropped");
