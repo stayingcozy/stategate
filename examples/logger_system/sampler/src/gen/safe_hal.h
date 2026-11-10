@@ -5,11 +5,23 @@
 #define SAMPLER_SAFE_HAL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct sampler_safe_hal sampler_safe_hal_t;
 
+/* Events this machine sends to other machines (system.yaml routes them). */
+typedef enum {
+    SAMPLER_OUT_TICK,
+} sampler_out_t;
+
 uint64_t sampler_hal_now_ms(sampler_safe_hal_t *hal);
 void sampler_hal_log(sampler_safe_hal_t *hal, const char *msg);
+
+/* The payload of the event being handled now (opaque bytes, e.g. an encoded
+ * protobuf message), or NULL with *len = 0 when it carries none. */
+const void *sampler_hal_payload(sampler_safe_hal_t *hal, size_t *len);
+/* Sends TICK with an optional payload; the system routes it. */
+void sampler_send_tick(sampler_safe_hal_t *hal, const void *data, size_t len);
 
 #endif

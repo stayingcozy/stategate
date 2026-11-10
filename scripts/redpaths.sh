@@ -417,6 +417,18 @@ sed -i 's/bus: i2c0, addr: 0x29/bus: i2c1, addr: 0x29/' sampler/sampler.yaml
 expect_sys "hardware: a node uses an undeclared bus" "uses bus i2c1, which is not declared"
 
 setup_sys
+sed -i 's/depth: 64, drop: never, payload: 64/depth: 32, drop: never, payload: 64/' system.yaml
+expect_sys "router: the system changed but the router was not regenerated" "router/logger_system.h differs from what stategate generates"
+
+setup_sys
+sed -i 's/drop: never, payload: 64/drop: never, payload: 2/' system.yaml
+"$SG" gen > /dev/null
+out=$("$SG" gate 2>&1 || true)
+if echo "$out" | grep -q "SYSTEM GATE GREEN" && grep -q "define LOGGER_SYSTEM_PAYLOAD_MAX 2$" router/logger_system.h; then
+    ok "router: regenerated after a system change, the gate is green again"
+else bad "router: regenerated after a system change, the gate is green again" "expected green and a 2-byte payload limit"; fi
+
+setup_sys
 echo "/* tweak */" >> sampler/src/gen/machine.c
 expect_sys "system: one red machine turns the system red" "SYSTEM GATE RED  1 of 3 machines red"
 

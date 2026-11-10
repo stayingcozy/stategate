@@ -158,9 +158,14 @@ static void gen_hal(const SgModel *m, GenSet *g) {
               "/* The only HAL handle node logic receives. Locked safety limits are enforced\n"
               " * in the generated wrappers (safe_hal.c), so no action can exceed them. */\n"
               "#ifndef %s_SAFE_HAL_H\n#define %s_SAFE_HAL_H\n\n"
-              "#include <stdbool.h>\n#include <stdint.h>\n\n"
+              "#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n"
               "typedef struct %s_safe_hal %s_safe_hal_t;\n\n",
               P(m), P(m), p, p);
+    if (m->sends.n) {
+        sb_puts(&b, "/* Events this machine sends to other machines (system.yaml routes them). */\ntypedef enum {\n");
+        for (int i = 0; i < m->sends.n; i++) sb_printf(&b, "    %s_OUT_%s,\n", P(m), m->sends.v[i]);
+        sb_printf(&b, "} %s_out_t;\n\n", p);
+    }
     for (int i = 0; i < m->n_hal; i++) {
         const Invariant *c = clamp_for(m, m->hal[i].call);
         if (!c) continue;
@@ -171,6 +176,18 @@ static void gen_hal(const SgModel *m, GenSet *g) {
     sb_printf(&b, "uint64_t %s_hal_now_ms(%s_safe_hal_t *hal);\nvoid %s_hal_log(%s_safe_hal_t *hal, const char *msg);\n", p, p, p, p);
     for (int i = 0; i < m->n_hal; i++)
         sb_printf(&b, "void %s_hal_%s(%s_safe_hal_t *hal, %s value);\n", p, m->hal[i].call, p, ctype(m->hal[i].arg));
+    sb_printf(&b,
+              "\n/* The payload of the event being handled now (opaque bytes, e.g. an encoded\n"
+              " * protobuf message), or NULL with *len = 0 when it carries none. */\n"
+              "const void *%s_hal_payload(%s_safe_hal_t *hal, size_t *len);\n",
+              p, p);
+    for (int i = 0; i < m->sends.n; i++) {
+        char *lo = xstrdup(m->sends.v[i]);
+        for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
+        sb_printf(&b, "/* Sends %s with an optional payload; the system routes it. */\nvoid %s_send_%s(%s_safe_hal_t *hal, const void *data, size_t len);\n",
+                  m->sends.v[i], p, lo, p);
+        free(lo);
+    }
     sb_puts(&b, "\n#endif\n");
     add(g, "src/gen/safe_hal.h", &b, 0);
 
@@ -190,6 +207,9 @@ static void gen_hal(const SgModel *m, GenSet *g) {
               P(m), P(m));
     for (int i = 0; i < m->n_hal; i++)
         sb_printf(&b, "    void (*%s)(void *ctx, %s value);\n", m->hal[i].call, ctype(m->hal[i].arg));
+    sb_puts(&b, "    /* Set by the system router; NULL in a machine on its own. */\n"
+                "    const void *(*payload)(void *ctx, size_t *len);\n");
+    if (m->sends.n) sb_printf(&b, "    void (*send)(void *ctx, %s_out_t event, const void *data, size_t len);\n", p);
     sb_printf(&b,
               "} %s_hal_t;\n\n"
               "struct %s_safe_hal {\n    %s_hal_t inner;\n};\n\n"
@@ -220,6 +240,23 @@ static void gen_hal(const SgModel *m, GenSet *g) {
         }
         sb_printf(&b, "    hal->inner.%s(hal->inner.ctx, value);\n}\n", h->call);
     }
+    sb_printf(&b,
+              "\nconst void *%s_hal_payload(%s_safe_hal_t *hal, size_t *len) {\n"
+              "    *len = 0;\n"
+              "    return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;\n"
+              "}\n",
+              p, p);
+    for (int i = 0; i < m->sends.n; i++) {
+        char *lo = xstrdup(m->sends.v[i]);
+        for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
+        sb_printf(&b,
+                  "\nvoid %s_send_%s(%s_safe_hal_t *hal, const void *data, size_t len) {\n"
+                  "    if (hal->inner.send) hal->inner.send(hal->inner.ctx, %s_OUT_%s, data, len);\n"
+                  "    else hal->inner.log(hal->inner.ctx, \"%s: no router, dropped\");\n"
+                  "}\n",
+                  p, lo, p, P(m), m->sends.v[i], m->sends.v[i]);
+        free(lo);
+    }
     add(g, "src/gen/safe_hal.c", &b, 0);
 }
 
@@ -240,6 +277,9 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    int n_calls;\n"
               "    struct { uint64_t at; char msg[160]; } logs[%s_FAKE_MAX];\n"
               "    int n_logs;\n"
+              "    /* The payload the machine sees for the event being handled. */\n"
+              "    const void *payload;\n"
+              "    size_t payload_len;\n"
               "} %s_probe_t;\n\n"
               "/* Clears the probe and returns a HAL that records into it. */\n"
               "%s_hal_t %s_fake_hal(%s_probe_t *probe);\n"
@@ -267,7 +307,23 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    snprintf(p->logs[p->n_logs].msg, sizeof p->logs[p->n_logs].msg, \"%%s\", msg);\n"
               "    p->n_logs++;\n"
               "}\n",
-              m->n_hal ? "" : "__attribute__((unused)) /* this machine declares no HAL calls */\n", p, P(m), p, p, P(m));
+              m->n_hal || m->sends.n ? "" : "__attribute__((unused)) /* this machine declares no HAL calls */\n", p, P(m), p, p,
+              P(m));
+    sb_printf(&b,
+              "\nstatic const void *fake_payload(void *ctx, size_t *len) {\n"
+              "    %s_probe_t *p = ctx;\n"
+              "    *len = p->payload_len;\n"
+              "    return p->payload;\n"
+              "}\n",
+              p);
+    if (m->sends.n) {
+        sb_printf(&b, "\n/* Sends are recorded as calls named \"send EVENT\" with the payload length. */\n"
+                      "static void fake_send(void *ctx, %s_out_t event, const void *data, size_t len) {\n"
+                      "    (void)data;\n    switch (event) {\n", p);
+        for (int i = 0; i < m->sends.n; i++)
+            sb_printf(&b, "    case %s_OUT_%s: record(ctx, \"send %s\", (int64_t)len); break;\n", P(m), m->sends.v[i], m->sends.v[i]);
+        sb_puts(&b, "    }\n}\n");
+    }
     for (int i = 0; i < m->n_hal; i++)
         sb_printf(&b, "\nstatic void fake_%s(void *ctx, %s value) {\n    record(ctx, \"%s\", (int64_t)value);\n}\n",
                   m->hal[i].call, ctype(m->hal[i].arg), m->hal[i].call);
@@ -278,8 +334,10 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    memset(&h, 0, sizeof h);\n"
               "    h.ctx = probe;\n"
               "    h.now_ms = fake_now_ms;\n"
-              "    h.log = fake_log;\n",
+              "    h.log = fake_log;\n"
+              "    h.payload = fake_payload;\n",
               p, p, p, p);
+    if (m->sends.n) sb_puts(&b, "    h.send = fake_send;\n");
     for (int i = 0; i < m->n_hal; i++) sb_printf(&b, "    h.%s = fake_%s;\n", m->hal[i].call, m->hal[i].call);
     sb_printf(&b,
               "    return h;\n}\n\n"

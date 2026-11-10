@@ -14,7 +14,7 @@ channels:
   - { from: device,  to: sampler, event: STOP,     kind: sync }
   - { from: device,  to: logger,  event: START,    kind: sync }
   - { from: device,  to: logger,  event: STOP,     kind: sync }
-  - { from: sampler, to: logger,  event: TICK,     kind: queue, depth: 64, drop: never }
+  - { from: sampler, to: logger,  event: TICK,     kind: queue, depth: 64, drop: never, payload: 64 }
   - { from: logger,  to: device,  event: LOG_FULL, kind: queue, depth: 4,  drop: oldest }
 
 external: [BUTTON, FAULT]   # the button ISR and the brown-out detector

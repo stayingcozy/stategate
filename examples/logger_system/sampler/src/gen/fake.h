@@ -14,6 +14,9 @@ typedef struct {
     int n_calls;
     struct { uint64_t at; char msg[160]; } logs[SAMPLER_FAKE_MAX];
     int n_logs;
+    /* The payload the machine sees for the event being handled. */
+    const void *payload;
+    size_t payload_len;
 } sampler_probe_t;
 
 /* Clears the probe and returns a HAL that records into it. */

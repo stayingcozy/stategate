@@ -8,3 +8,18 @@ uint64_t device_hal_now_ms(device_safe_hal_t *hal) {
 void device_hal_log(device_safe_hal_t *hal, const char *msg) {
     hal->inner.log(hal->inner.ctx, msg);
 }
+
+const void *device_hal_payload(device_safe_hal_t *hal, size_t *len) {
+    *len = 0;
+    return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;
+}
+
+void device_send_start(device_safe_hal_t *hal, const void *data, size_t len) {
+    if (hal->inner.send) hal->inner.send(hal->inner.ctx, DEVICE_OUT_START, data, len);
+    else hal->inner.log(hal->inner.ctx, "START: no router, dropped");
+}
+
+void device_send_stop(device_safe_hal_t *hal, const void *data, size_t len) {
+    if (hal->inner.send) hal->inner.send(hal->inner.ctx, DEVICE_OUT_STOP, data, len);
+    else hal->inner.log(hal->inner.ctx, "STOP: no router, dropped");
+}

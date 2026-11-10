@@ -10,6 +10,9 @@ typedef struct {
     void *ctx;
     uint64_t (*now_ms)(void *ctx);
     void (*log)(void *ctx, const char *msg);
+    /* Set by the system router; NULL in a machine on its own. */
+    const void *(*payload)(void *ctx, size_t *len);
+    void (*send)(void *ctx, sampler_out_t event, const void *data, size_t len);
 } sampler_hal_t;
 
 struct sampler_safe_hal {

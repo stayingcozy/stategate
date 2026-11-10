@@ -23,6 +23,12 @@ static void fake_log(void *ctx, const char *msg) {
     p->n_logs++;
 }
 
+static const void *fake_payload(void *ctx, size_t *len) {
+    posture_probe_t *p = ctx;
+    *len = p->payload_len;
+    return p->payload;
+}
+
 static void fake_stim_set_intensity(void *ctx, uint8_t value) {
     record(ctx, "stim_set_intensity", (int64_t)value);
 }
@@ -34,6 +40,7 @@ posture_hal_t posture_fake_hal(posture_probe_t *probe) {
     h.ctx = probe;
     h.now_ms = fake_now_ms;
     h.log = fake_log;
+    h.payload = fake_payload;
     h.stim_set_intensity = fake_stim_set_intensity;
     return h;
 }

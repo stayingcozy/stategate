@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-__attribute__((unused)) /* this machine declares no HAL calls */
 static void record(device_probe_t *p, const char *call, int64_t value) {
     if (p->n_calls == DEVICE_FAKE_MAX) return;
     p->calls[p->n_calls].call = call;
@@ -24,6 +23,21 @@ static void fake_log(void *ctx, const char *msg) {
     p->n_logs++;
 }
 
+static const void *fake_payload(void *ctx, size_t *len) {
+    device_probe_t *p = ctx;
+    *len = p->payload_len;
+    return p->payload;
+}
+
+/* Sends are recorded as calls named "send EVENT" with the payload length. */
+static void fake_send(void *ctx, device_out_t event, const void *data, size_t len) {
+    (void)data;
+    switch (event) {
+    case DEVICE_OUT_START: record(ctx, "send START", (int64_t)len); break;
+    case DEVICE_OUT_STOP: record(ctx, "send STOP", (int64_t)len); break;
+    }
+}
+
 device_hal_t device_fake_hal(device_probe_t *probe) {
     memset(probe, 0, sizeof *probe);
     device_hal_t h;
@@ -31,6 +45,8 @@ device_hal_t device_fake_hal(device_probe_t *probe) {
     h.ctx = probe;
     h.now_ms = fake_now_ms;
     h.log = fake_log;
+    h.payload = fake_payload;
+    h.send = fake_send;
     return h;
 }
 

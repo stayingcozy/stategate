@@ -127,6 +127,33 @@ same. `gen` and `init` also run in every folder, and `stategate export mermaid`
 draws the machines and channels. Everything else (tickets, sign-off, the app)
 works in one machine's folder: `stategate -C sampler ticket gen`.
 
+### Running the channels (C)
+
+For a C system, `stategate gen` at the root also writes the router: a root
+`CMakeLists.txt` and `router/`. A node sends with the generated
+`<machine>_send_<event>(hal, data, len)`, and a receiving node reads the bytes
+with `<machine>_hal_payload(hal, &len)`. Payloads are opaque: encode them with
+nanopb or anything else, and give the channel the largest size with
+`payload: <bytes>`.
+
+```c
+logger_system_system_t sys;
+logger_system_boards_t boards = { device_board(), sampler_board(), logger_board() };
+logger_system_init(&sys, &boards);           // starts every machine
+logger_system_post_device(&sys, DEVICE_EV_BUTTON, NULL, 0);   // an external event
+logger_system_step_sampler(&sys);             // in the sampler's task, every 10 ms
+```
+
+A `sync` channel delivers inside the sender's call. A `queue` holds up to
+`depth` events until the receiver's step function runs. On ESP-IDF that's a
+FreeRTOS queue; on a PC it's a ring buffer. When a queue is full, `never`
+makes the sender wait (on a PC the event is dropped and counted), `oldest`
+drops the oldest event, and `newest` drops the new one. The system gate checks
+that the router matches `system.yaml` and runs its tests, one per queue
+channel. On ESP-IDF, add the system folder to `EXTRA_COMPONENT_DIRS`: each
+machine folder and `router/` become components. Rust systems get the wiring
+checks but no router yet.
+
 ### Hardware: buses and what each node uses
 
 stategate knows nothing about parts. A model declares its buses, and each
