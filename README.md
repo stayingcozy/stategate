@@ -169,6 +169,21 @@ channel. On ESP-IDF, add the system folder to `EXTRA_COMPONENT_DIRS`: each
 machine folder and `router/` become components. Rust systems get the wiring
 checks but no router yet.
 
+### Simulating the whole system (C)
+
+`stategate gen` at the root also writes `router/sim.c`: every machine on its
+fake board, one clock in 10 ms steps, and the real router between them.
+
+```sh
+cmake -S . -B build && cmake --build build
+./build/logger_system_sim --trace trace.sgt 3000 device.BUTTON device.BUTTON@2000
+```
+
+Each `machine.EVENT[@ms]` is posted to that machine at that time (0 by
+default). Log lines print as they happen, grouped by machine within a step,
+and the state of every instance prints at the end. The trace holds the exact
+order, for `stategate trace show` or the viewer.
+
 ### Recording and replaying a run (C)
 
 Every transition goes through the HAL's `trace` hook as three numbers: from,

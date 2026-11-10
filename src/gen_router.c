@@ -578,8 +578,12 @@ static void gen_cmake(const SgSystem *s, GenSet *g) {
               "add_executable(%s_test_router router/test_router.c)\n"
               "target_link_libraries(%s_test_router PRIVATE %s_router unity)\n"
               "target_compile_options(%s_test_router PRIVATE ${SG_WARNINGS})\n"
-              "add_test(NAME router COMMAND %s_test_router)\n",
-              S, S, S, S, S);
+              "add_test(NAME router COMMAND %s_test_router)\n\n"
+              "# The whole system on fake boards: build/%s_sim [--trace out.sgt] <run_ms> [machine.EVENT[@ms] ...]\n"
+              "add_executable(%s_sim router/sim.c)\n"
+              "target_link_libraries(%s_sim PRIVATE %s_router)\n"
+              "target_compile_options(%s_sim PRIVATE ${SG_WARNINGS})\n",
+              S, S, S, S, S, S, S, S, S, S);
     add(g, "CMakeLists.txt", &b);
 
     sb_init(&b);
@@ -591,6 +595,118 @@ static void gen_cmake(const SgSystem *s, GenSet *g) {
     add(g, "router/CMakeLists.txt", &b);
 }
 
+/* router/sim.c: every machine on its fake board, one clock, the real router.
+ * Prints each log line as it happens and the final state of every instance;
+ * --trace writes the whole run in the format `stategate trace show` and the
+ * viewer read. */
+static void gen_sim(const SgSystem *s, GenSet *g) {
+    const char *S = s->id;
+    SB b;
+    sb_init(&b);
+    header(&b, "/*");
+    sb_printf(&b,
+              "/* The %s system on a PC: every machine on its fake board, one clock, the\n"
+              " * real router.\n"
+              " *\n"
+              " * Usage: build/%s_sim [--trace out.sgt] <run_ms> [machine.EVENT[@ms] ...]\n"
+              " * Each event is posted to that machine (every instance) at its time, 0 by\n"
+              " * default. The clock moves in 10 ms steps; each step runs every machine once.\n"
+              " * Log lines print as they happen, then the state of every instance. */\n"
+              "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n#include \"%s.h\"\n",
+              S, S, S);
+    for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "#include \"../%s/src/gen/fake.h\"\n", s->machines[i].dir);
+    sb_puts(&b, "\n");
+    for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "static %s_probe_t %s_probe;\n", s->machines[i].id, s->machines[i].id);
+    sb_printf(&b, "static %s_system_t sys;\n\n", S);
+    sb_puts(&b, "typedef struct {\n    const char *name;\n    int value;\n} named_t;\n\n");
+    for (int i = 0; i < s->n_machines; i++) {
+        const SgModel *mm = &s->machines[i].model;
+        sb_printf(&b, "static const named_t %s_events[] = {\n", s->machines[i].id);
+        for (int k = 0; k < mm->events.n; k++) sb_printf(&b, "    {\"%s\", %s_EV_%s},\n", mm->events.v[k], up(s->machines[i].id), mm->events.v[k]);
+        sb_puts(&b, "    {NULL, 0},\n};\n\n");
+    }
+    sb_puts(&b,
+            "static int lookup(const named_t *t, const char *name) {\n"
+            "    for (; t->name; t++)\n        if (!strcmp(t->name, name)) return t->value;\n    return -1;\n}\n\n"
+            "static void trace_sink(void *ctx, const uint8_t *record, size_t len) { fwrite(record, 1, len, ctx); }\n\n"
+            "typedef struct {\n    int machine, event;\n    uint64_t at;\n    int sent;\n} plan_t;\n\n");
+    sb_puts(&b, "static void post(const plan_t *p) {\n    switch (p->machine) {\n");
+    for (int i = 0; i < s->n_machines; i++)
+        sb_printf(&b, "    case %d: %s_post_%s(&sys, (%s_event_t)p->event, NULL, 0); break;\n", i, S, s->machines[i].id, s->machines[i].id);
+    sb_puts(&b, "    }\n}\n\n");
+    sb_puts(&b, "/* Prints what each board logged since the last call, then clears the probes\n * so a long run never fills them. */\nstatic void drain(uint64_t t) {\n");
+    for (int i = 0; i < s->n_machines; i++) {
+        const char *m = s->machines[i].id;
+        sb_printf(&b,
+                  "    for (int i = 0; i < %s_probe.n_logs; i++) printf(\"%%8llu ms  %-8s %%s\\n\", (unsigned long long)t, %s_probe.logs[i].msg);\n"
+                  "    %s_probe.n_logs = %s_probe.n_calls = %s_probe.n_traces = 0;\n",
+                  m, m, m, m, m, m);
+    }
+    sb_puts(&b, "}\n\n");
+    sb_printf(&b,
+              "int main(int argc, char **argv) {\n"
+              "    const char *trace_path = NULL;\n"
+              "    int a = 1;\n"
+              "    if (argc > 2 && !strcmp(argv[1], \"--trace\")) { trace_path = argv[2]; a = 3; }\n"
+              "    if (a >= argc) {\n"
+              "        fprintf(stderr, \"usage: %%s [--trace out.sgt] <run_ms> [machine.EVENT[@ms] ...]\\n\", argv[0]);\n"
+              "        return 2;\n"
+              "    }\n"
+              "    uint64_t run_ms = strtoull(argv[a++], NULL, 10);\n"
+              "    int n = argc - a;\n"
+              "    plan_t *plan = calloc((size_t)(n ? n : 1), sizeof *plan);\n"
+              "    for (int i = 0; i < n; i++) {\n"
+              "        char buf[128];\n"
+              "        snprintf(buf, sizeof buf, \"%%s\", argv[a + i]);\n"
+              "        char *at = strchr(buf, '@');\n"
+              "        if (at) { *at = 0; plan[i].at = strtoull(at + 1, NULL, 10); }\n"
+              "        char *dot = strchr(buf, '.');\n"
+              "        plan[i].machine = plan[i].event = -1;\n"
+              "        if (dot) {\n"
+              "            *dot = 0;\n");
+    for (int i = 0; i < s->n_machines; i++)
+        sb_printf(&b, "            %sif (!strcmp(buf, \"%s\")) { plan[i].machine = %d; plan[i].event = lookup(%s_events, dot + 1); }\n",
+                  i ? "else " : "", s->machines[i].id, i, s->machines[i].id);
+    sb_puts(&b, "        }\n"
+                "        if (plan[i].event < 0) {\n"
+                "            fprintf(stderr, \"%s: not machine.EVENT for a machine and event in this system\\n\", argv[a + i]);\n"
+                "            return 2;\n"
+                "        }\n"
+                "    }\n\n");
+    sb_printf(&b, "    %s_boards_t boards;\n", S);
+    for (int i = 0; i < s->n_machines; i++)
+        sb_printf(&b, "    boards.%s = %s_fake_hal(&%s_probe);\n", s->machines[i].id, s->machines[i].id, s->machines[i].id);
+    sb_printf(&b,
+              "    FILE *trace = NULL;\n"
+              "    if (trace_path) {\n"
+              "        trace = fopen(trace_path, \"wb\");\n"
+              "        if (!trace) { perror(trace_path); return 1; }\n"
+              "        uint8_t h[%s_TRACE_HEADER_SIZE];\n"
+              "        fwrite(h, 1, %s_trace_header(h), trace);\n"
+              "    }\n"
+              "    %s_init(&sys, &boards);\n"
+              "    if (trace) %s_set_trace(&sys, trace_sink, trace);\n"
+              "    drain(0);\n"
+              "    for (uint64_t t = 0; t <= run_ms; t += 10) {\n",
+              up(S), S, S, S);
+    for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "        %s_probe.now_ms = t;\n", s->machines[i].id);
+    sb_printf(&b,
+              "        for (int i = 0; i < n; i++)\n"
+              "            if (!plan[i].sent && plan[i].at <= t) { plan[i].sent = 1; post(&plan[i]); }\n"
+              "        %s_step_all(&sys);\n"
+              "        drain(t);\n"
+              "    }\n"
+              "    printf(\"after %%llu ms:\\n\", (unsigned long long)run_ms);\n",
+              S);
+    for (int i = 0; i < s->n_machines; i++) {
+        const char *m = s->machines[i].id;
+        sb_printf(&b, "    for (int i = 0; i < %s_%s_INSTANCES; i++) printf(\"  %s[%%d]  %%s\\n\", i, %s_state_id(sys.%s[i].state));\n", up(S),
+                  up(m), m, m, m);
+    }
+    sb_puts(&b, "    if (trace) fclose(trace);\n    free(plan);\n    return 0;\n}\n");
+    add(g, "router/sim.c", &b);
+}
+
 void gen_router(const SgSystem *s, GenSet *out) {
     memset(out, 0, sizeof *out);
     gen_cmake(s, out);
@@ -598,4 +714,5 @@ void gen_router(const SgSystem *s, GenSet *out) {
     gen_router_h(s, out);
     gen_router_c(s, out);
     gen_router_test(s, out);
+    gen_sim(s, out);
 }

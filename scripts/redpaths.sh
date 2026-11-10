@@ -469,6 +469,24 @@ setup_sys
 sed -i 's/after: { ms: 2000, event: CAL_TIMEOUT }/after: { ms: 5000, event: CAL_TIMEOUT }/' sensor/sensor.yaml
 expect_sys "waits_for: the timeout is later than the limit" "gives up after 5000 ms, later than its 2000 ms limit"
 
+# A machine that fails to load is reported once, not again as an external
+# event nobody receives.
+setup_sys
+sed -i 's/  start_all: { emits: \[START\], note:/  start_all: { note:/' device/device.yaml
+out=$("$SG" validate 2>&1 || true)
+if echo "$out" | grep -q "START is under 'sends'" && ! echo "$out" | grep -q "external event BUTTON"; then
+    ok "system: a broken machine is not also blamed on the external list"
+else bad "system: a broken machine is not also blamed on the external list" "$out"; fi
+
+# The system simulator: one run across every machine, read back by name.
+setup_sys
+"$SG" gate > /dev/null 2>&1 || true
+out=$(./build/logger_system_sim --trace run.sgt 100 device.BUTTON 2>&1)
+shown=$("$SG" trace show run.sgt 2>&1 || true)
+if echo "$out" | grep -q "sensor\[1\]  sensor.Ready" && echo "$shown" | grep -q "logger\[0\]  logger.Ready --START--> logger.Logging"; then
+    ok "sim: a system run reaches every machine and its trace reads back"
+else bad "sim: a system run reaches every machine and its trace reads back" "$out $shown"; fi
+
 setup_sys
 echo "/* tweak */" >> sampler/src/gen/machine.c
 expect_sys "system: one red machine turns the system red" "SYSTEM GATE RED  1 of 4 machines red"

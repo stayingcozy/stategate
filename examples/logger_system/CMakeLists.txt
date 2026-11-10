@@ -52,3 +52,8 @@ add_executable(logger_system_test_router router/test_router.c)
 target_link_libraries(logger_system_test_router PRIVATE logger_system_router unity)
 target_compile_options(logger_system_test_router PRIVATE ${SG_WARNINGS})
 add_test(NAME router COMMAND logger_system_test_router)
+
+# The whole system on fake boards: build/logger_system_sim [--trace out.sgt] <run_ms> [machine.EVENT[@ms] ...]
+add_executable(logger_system_sim router/sim.c)
+target_link_libraries(logger_system_sim PRIVATE logger_system_router)
+target_compile_options(logger_system_sim PRIVATE ${SG_WARNINGS})
