@@ -11,6 +11,8 @@ typedef struct {
     uint64_t (*now_ms)(void *ctx);
     void (*log)(void *ctx, const char *msg);
     void (*stim_set_intensity)(void *ctx, uint8_t value);
+    /* Set by the system router; NULL in a machine on its own. */
+    const void *(*payload)(void *ctx, size_t *len);
 } posture_hal_t;
 
 struct posture_safe_hal {

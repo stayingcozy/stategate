@@ -1,9 +1,16 @@
 // @action read_and_send
 // @node sampler.Sampling (entry)
-// @stub read every sensor, stamp the tick, send TICK
+// @stub sends a counter instead of reading the sensors
+
+#include <stdint.h>
 
 #include "gen/nodes.h"
 
+static uint32_t count;
+
+/* The payload is opaque to stategate: here a 4-byte counter, on the device an
+ * encoded protobuf message. */
 void sampler_read_and_send_run(sampler_safe_hal_t *hal) {
-    sampler_hal_log(hal, "read_and_send (stub)");
+    count++;
+    sampler_send_tick(hal, &count, sizeof count);
 }

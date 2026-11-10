@@ -8,3 +8,13 @@ uint64_t sampler_hal_now_ms(sampler_safe_hal_t *hal) {
 void sampler_hal_log(sampler_safe_hal_t *hal, const char *msg) {
     hal->inner.log(hal->inner.ctx, msg);
 }
+
+const void *sampler_hal_payload(sampler_safe_hal_t *hal, size_t *len) {
+    *len = 0;
+    return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;
+}
+
+void sampler_send_tick(sampler_safe_hal_t *hal, const void *data, size_t len) {
+    if (hal->inner.send) hal->inner.send(hal->inner.ctx, SAMPLER_OUT_TICK, data, len);
+    else hal->inner.log(hal->inner.ctx, "TICK: no router, dropped");
+}

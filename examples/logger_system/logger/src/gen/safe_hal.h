@@ -5,11 +5,23 @@
 #define LOGGER_SAFE_HAL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct logger_safe_hal logger_safe_hal_t;
 
+/* Events this machine sends to other machines (system.yaml routes them). */
+typedef enum {
+    LOGGER_OUT_LOG_FULL,
+} logger_out_t;
+
 uint64_t logger_hal_now_ms(logger_safe_hal_t *hal);
 void logger_hal_log(logger_safe_hal_t *hal, const char *msg);
+
+/* The payload of the event being handled now (opaque bytes, e.g. an encoded
+ * protobuf message), or NULL with *len = 0 when it carries none. */
+const void *logger_hal_payload(logger_safe_hal_t *hal, size_t *len);
+/* Sends LOG_FULL with an optional payload; the system routes it. */
+void logger_send_log_full(logger_safe_hal_t *hal, const void *data, size_t len);
 
 #endif

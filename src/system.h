@@ -21,6 +21,7 @@ typedef struct {
     char *kind; /* queue | sync */
     long depth; /* queue only */
     char *drop; /* queue only: never | oldest | newest */
+    long payload; /* most payload bytes one event carries; 0 = none */
     int line;
 } Channel;
 

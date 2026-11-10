@@ -5,6 +5,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "gen_c.h"
+#include "gen_router.h"
 #include "platform.h"
 #include "resources.h"
 #include "validate.h"
@@ -13,7 +15,7 @@
 static const char *const ROOT_KEYS[] = {"system", "machines", "channels", "external", NULL};
 static const char *const SYSTEM_KEYS[] = {"id", "language", NULL};
 static const char *const MACHINE_KEYS[] = {"id", "dir", NULL};
-static const char *const CHANNEL_KEYS[] = {"from", "to", "event", "kind", "depth", "drop", NULL};
+static const char *const CHANNEL_KEYS[] = {"from", "to", "event", "kind", "depth", "drop", "payload", NULL};
 static const char *const DROPS[] = {"never", "oldest", "newest", NULL};
 
 static int in_list(const char *const *l, const char *s) {
@@ -125,6 +127,8 @@ int system_load(const char *path, SgSystem *s, StrList *errors) {
             c->kind = y_str(&r, y_get(&r, cn, "kind"), "kind");
             c->depth = y_int(&r, y_get(&r, cn, "depth"), "depth", 0);
             c->drop = y_str(&r, y_get(&r, cn, "drop"), "drop");
+            c->payload = y_int(&r, y_get(&r, cn, "payload"), "payload", 0);
+            if (c->payload < 0 || c->payload > 65535) y_err(&r, cn, "payload is a byte count from 0 to 65535");
             if (!c->from || !c->to || !c->event) {
                 y_err(&r, cn, "a channel needs from, to and event");
                 if (!c->from) c->from = xstrdup("?");
@@ -279,6 +283,34 @@ static int load_and_check(SgSystem *s, int quiet) {
     return e1.n + e2.n;
 }
 
+static void ignore_build(void) {
+    char *text = read_file(".gitignore", NULL);
+    if (text && strstr(text, "/build\n")) { free(text); return; }
+    SB b;
+    sb_init(&b);
+    sb_puts(&b, text ? text : "");
+    if (b.len && b.s[b.len - 1] != '\n') sb_puts(&b, "\n");
+    sb_puts(&b, "/build\n");
+    write_file(".gitignore", b.s, b.len);
+    free(text);
+    free(b.s);
+}
+
+/* The router is generated for C systems; Rust systems get the checks only. */
+static int has_router(const SgSystem *s) { return !strcmp(s->language, "c"); }
+
+/* Generated router files that are missing or differ from what gen writes. */
+static void router_drift(const SgSystem *s, StrList *e) {
+    GenSet g;
+    gen_router(s, &g);
+    for (int i = 0; i < g.n; i++) {
+        char *disk = read_file(g.v[i].path, NULL);
+        if (!disk) sl_pushf(e, "%s is missing: run stategate gen", g.v[i].path);
+        else if (strcmp(disk, g.v[i].content)) sl_pushf(e, "%s differs from what stategate generates (edited by hand, or the system changed): run stategate gen", g.v[i].path);
+        free(disk);
+    }
+}
+
 /* Runs `stategate -C <dir> <cmd> [arg]` and prints its output, indented. */
 static int run_in(const char *self, const SysMachine *sm, const char *cmd, const char *arg) {
     const char *argv[] = {self, "-C", sm->dir, cmd, arg, NULL};
@@ -332,7 +364,23 @@ int cmd_system(const char *cmd, int argc, char **argv, const char *argv0) {
         }
         int bad = 0;
         for (int i = 0; i < s.n_machines; i++) bad |= run_in(self, &s.machines[i], "gen", NULL) != 0;
-        return bad;
+        if (bad) return 1;
+        if (!has_router(&s)) {
+            printf("the channel router is generated for C systems only; %s gets the wiring checks\n", s.language);
+            return 0;
+        }
+        SgSystem fresh;
+        if (load_and_check(&fresh, 1)) { fprintf(stderr, "not generating the router from a system with wiring problems\n"); return 1; }
+        GenSet g;
+        gen_router(&fresh, &g);
+        for (int i = 0; i < g.n; i++)
+            if (write_file(g.v[i].path, g.v[i].content, strlen(g.v[i].content)) != 0) {
+                fprintf(stderr, "cannot write %s\n", g.v[i].path);
+                return 1;
+            }
+        ignore_build();
+        printf("router: generated %d files (CMakeLists.txt, router/)\n", g.n);
+        return 0;
     }
     if (!strcmp(cmd, "init")) {
         StrList e = {0};
@@ -349,6 +397,7 @@ int cmd_system(const char *cmd, int argc, char **argv, const char *argv0) {
             write_file(".git/hooks/pre-commit", hook, strlen(hook));
             chmod(".git/hooks/pre-commit", 0755);
             printf("installed .git/hooks/pre-commit (runs the system gate)\n");
+            ignore_build();
         } else {
             printf("not a git repository root: pre-commit hook not installed\n");
         }
@@ -369,6 +418,18 @@ int cmd_system(const char *cmd, int argc, char **argv, const char *argv0) {
         if (red) {
             printf("SYSTEM GATE RED  %d of %d machines red\n", red, s.n_machines);
             return 1;
+        }
+        if (has_router(&s)) {
+            StrList e = {0}, notes = {0};
+            router_drift(&s, &e);
+            if (!e.n) c_run_tests(&e, &notes);
+            if (e.n) {
+                printf("  FAIL  router\n");
+                for (int i = 0; i < e.n; i++) printf("         %s\n", e.v[i]);
+                printf("SYSTEM GATE RED  at the router\n");
+                return 1;
+            }
+            printf("  PASS  router: %s\n", notes.n ? notes.v[0] : "ok");
         }
         printf("SYSTEM GATE GREEN  %d machines\n", s.n_machines);
         return 0;

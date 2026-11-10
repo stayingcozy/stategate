@@ -8,3 +8,13 @@ uint64_t logger_hal_now_ms(logger_safe_hal_t *hal) {
 void logger_hal_log(logger_safe_hal_t *hal, const char *msg) {
     hal->inner.log(hal->inner.ctx, msg);
 }
+
+const void *logger_hal_payload(logger_safe_hal_t *hal, size_t *len) {
+    *len = 0;
+    return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;
+}
+
+void logger_send_log_full(logger_safe_hal_t *hal, const void *data, size_t len) {
+    if (hal->inner.send) hal->inner.send(hal->inner.ctx, LOGGER_OUT_LOG_FULL, data, len);
+    else hal->inner.log(hal->inner.ctx, "LOG_FULL: no router, dropped");
+}

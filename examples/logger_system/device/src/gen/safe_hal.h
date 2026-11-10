@@ -5,11 +5,26 @@
 #define DEVICE_SAFE_HAL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct device_safe_hal device_safe_hal_t;
 
+/* Events this machine sends to other machines (system.yaml routes them). */
+typedef enum {
+    DEVICE_OUT_START,
+    DEVICE_OUT_STOP,
+} device_out_t;
+
 uint64_t device_hal_now_ms(device_safe_hal_t *hal);
 void device_hal_log(device_safe_hal_t *hal, const char *msg);
+
+/* The payload of the event being handled now (opaque bytes, e.g. an encoded
+ * protobuf message), or NULL with *len = 0 when it carries none. */
+const void *device_hal_payload(device_safe_hal_t *hal, size_t *len);
+/* Sends START with an optional payload; the system routes it. */
+void device_send_start(device_safe_hal_t *hal, const void *data, size_t len);
+/* Sends STOP with an optional payload; the system routes it. */
+void device_send_stop(device_safe_hal_t *hal, const void *data, size_t len);
 
 #endif
