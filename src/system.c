@@ -292,7 +292,11 @@ void system_check(const SgSystem *s, StrList *e) {
     free(buses);
     free(claims);
 
-    for (int k = 0; k < s->external.n; k++) {
+    /* A machine that failed to load may be the one that takes it: say nothing
+     * until every machine loads, rather than blame the external list. */
+    int all_loaded = 1;
+    for (int i = 0; i < s->n_machines; i++) all_loaded &= s->machines[i].loaded;
+    for (int k = 0; k < s->external.n && all_loaded; k++) {
         int used = 0;
         for (int i = 0; i < s->n_machines; i++)
             if (s->machines[i].loaded && model_event_index(&s->machines[i].model, s->external.v[k]) >= 0) used = 1;
@@ -355,7 +359,10 @@ static int run_in(const char *self, const SysMachine *sm, const char *cmd, const
 
 static int system_mermaid(const SgSystem *s) {
     printf("flowchart LR\n");
-    for (int i = 0; i < s->n_machines; i++) printf("    %s[%s]\n", s->machines[i].id, s->machines[i].id);
+    for (int i = 0; i < s->n_machines; i++) {
+        if (s->machines[i].instances > 1) printf("    %s[%s x%d]\n", s->machines[i].id, s->machines[i].id, s->machines[i].instances);
+        else printf("    %s[%s]\n", s->machines[i].id, s->machines[i].id);
+    }
     for (int i = 0; i < s->n_channels; i++) {
         const Channel *c = &s->channels[i];
         if (!strcmp(c->kind, "sync")) printf("    %s -->|%s sync| %s\n", c->from, c->event, c->to);
