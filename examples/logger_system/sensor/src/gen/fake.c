@@ -28,6 +28,16 @@ static int fake_instance(void *ctx) {
     return ((sensor_probe_t *)ctx)->instance;
 }
 
+static void fake_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {
+    sensor_probe_t *p = ctx;
+    if (p->n_traces == SENSOR_FAKE_MAX) return;
+    p->traces[p->n_traces].at = p->now_ms;
+    p->traces[p->n_traces].from = from;
+    p->traces[p->n_traces].event = event;
+    p->traces[p->n_traces].to = to;
+    p->n_traces++;
+}
+
 static int32_t fake_param(void *ctx, int index) {
     return ((sensor_probe_t *)ctx)->params[index];
 }
@@ -47,6 +57,7 @@ sensor_hal_t sensor_fake_hal(sensor_probe_t *probe) {
     h.log = fake_log;
     h.payload = fake_payload;
     h.instance = fake_instance;
+    h.trace = fake_trace;
     h.param = fake_param;
     return h;
 }

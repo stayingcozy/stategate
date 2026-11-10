@@ -167,6 +167,21 @@ channel. On ESP-IDF, add the system folder to `EXTRA_COMPONENT_DIRS`: each
 machine folder and `router/` become components. Rust systems get the wiring
 checks but no router yet.
 
+### Recording and replaying a run (C)
+
+Every transition goes through the HAL's `trace` hook as three numbers: from,
+event and to. `src/gen/trace.h` turns them into an 11-byte record behind a
+header that names the machine and the sha-256 of its model, so a log can go
+over any transport (a file, UART, BLE). The simulator writes one with
+`build/sim --trace run.sgt ...`; in a system, give the router a sink with
+`<system>_set_trace` after writing `<system>_trace_header`, and it records
+every machine and instance.
+
+`stategate trace show run.sgt` prints the log by name. `stategate-view
+--replay run.sgt`, or the **Replay** button when `trace.sgt` sits in the
+project (or the system root above it), steps through it on the canvas. Both
+refuse a log recorded from another version of the model.
+
 ### Hardware: buses and what each node uses
 
 stategate knows nothing about parts. A model declares its buses, and each

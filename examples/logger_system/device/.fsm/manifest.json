@@ -5,15 +5,16 @@
   "files": {
     "CMakeLists.txt": "4ace485dc27af67319338e57e0a77e0e691d1b8ccff7ea2246ced3728f319b67",
     "src/gen/safe_hal.h": "0f42cf3093b225c5c9bd911147d1b1795b2c0ddec377a6dbc4bac4738ab3fe16",
-    "src/gen/hal.h": "4775d418830f8ffc2240b82b0ccf50f88494e615c1a10438d0f6cbe09c625153",
-    "src/gen/safe_hal.c": "634c0ab9d14e88e410756c9aef1de330f0ecc2567c4a08b3af85a84f15e458d9",
-    "src/gen/fake.h": "38e59f97b985878ed2ea1a8140e6b2ee6dffa2c5feb10e8791984f1453b8065f",
-    "src/gen/fake.c": "076b68ce86148aa97eb83c500cd05344e40f18cd651057dc3fe0a887f9f947ee",
+    "src/gen/hal.h": "9d7bae434b8dbcc22845f911d284177187cd72b0b01ad28feb39103126bd6516",
+    "src/gen/safe_hal.c": "76ef865d571607a82ad34ef6c41f1edcec978ac1366a7ec5234461a7c8c5dc6c",
+    "src/gen/fake.h": "64259e0c96fa07feb1a6d6ca29215521a1562bcb98eabf34cfe73bea29986e38",
+    "src/gen/fake.c": "b8d1ef9f8172998bac9c7d66ddff976a0dcf85c1e0dc8c1854b249fb88eb838c",
     "src/gen/machine.h": "9d12b2e941d50aff357aa28f9b5521247f639817918eb6dca245ca18d4f1414b",
     "src/gen/nodes.h": "004e1ff30f1f21a51b49958ade0851a84c11a1ab3bb2fb7af9ab07ab328645b2",
-    "src/gen/machine.c": "31e843fbf77142efad7c9b5020754f2e81c4e19a8da8f5f75d31f77ea93dfa1d",
+    "src/gen/machine.c": "908b227665e07a4557c9f0f52265debc4bf86374d659ca2e3f508ebb99598041",
     "tests/transitions.c": "ea9398d9930c756086f59065b101188b2187c244fdceab796aab3d6b16c91b13",
     "tests/invariants.c": "355a9807fb18ec799658620958dddaa16dbc908b7aa8e94ef8bba7c0ad90330a",
-    "examples/sim.c": "fe8f4df5d3a5dec3005cea220cab12792f154418792621d57f1f94435e0a5593"
+    "src/gen/trace.h": "6f2202b98fb1b28e6ce768b7b640808ecdbc13590a9f9b0a6721cfa5f85af707",
+    "examples/sim.c": "6ed5f33251ca7dd1650d263143029454a781117361fb4530abd19a80b85dc74a"
   }
 }

@@ -5,15 +5,16 @@
   "files": {
     "CMakeLists.txt": "8fa9e21580ecf6de79e755c166d942dbed382071aaa58c8b69f3311d61ecb60f",
     "src/gen/safe_hal.h": "7d234a41450ef9a3bafe524769e5c2323dea3e0151d9c38cd4cdf4dd893e9caf",
-    "src/gen/hal.h": "0e53671bc12b6f7c46f9f5c5cbde62c2e716211b74347e7a3a95e066c463c72b",
-    "src/gen/safe_hal.c": "13eb47ef522edd5e4312e5847433693d85bcb60532ce3332ba0e1ad3e5fa1a74",
-    "src/gen/fake.h": "8d0618cb9cd26236e3c0a58996cb1872cba44c6f7f52fc6ad9ce4cf1c8be6eaf",
-    "src/gen/fake.c": "8a44d9df275fda288793b4e371d7af0a25a7d5f1085388a0f082de4b7b755d63",
+    "src/gen/hal.h": "a3ed3a9fb2accb1fc1ede3c9e674028ef55c99b8d02f7161c4188898ddca79d0",
+    "src/gen/safe_hal.c": "ef3c24e1a0baf25dba0a29815dcd786b865deaf151005984162f9bca048c4199",
+    "src/gen/fake.h": "08eed6f5246ecb62a9db419e3b8ff92ab8c75d91db3288c10c1f228149e8c4d6",
+    "src/gen/fake.c": "1cdaa126f114c94c6c5492bede84142903e550097c0ddaaf473faed80267972f",
     "src/gen/machine.h": "db48e84ee0ee6e63b9d54e9e27addada3e4e6f28e9a4deae25688cc8eac0d138",
     "src/gen/nodes.h": "51ac9f112bf2a453ff6a8c45102985cefa61850dd39a6cc402db12e9f6cabb36",
-    "src/gen/machine.c": "6f52a713133c01853777d7f979f5d1313ac549ddd25eb92ed8d5f6d0dc19b545",
+    "src/gen/machine.c": "71f56846ff07497767f175e5094ce7ec949b13407c49bc9ac60c378c20a3325d",
     "tests/transitions.c": "efde0aa1fa757444fbb4f01ef1ccf1a6d14669c0beab9e56511a0fa801492b6d",
     "tests/invariants.c": "44fa28cc681f6b468f8f32f95d032767cfa2f356daf963dbe7f4a5919f59c836",
-    "examples/sim.c": "8382a04d1eaf69a6e48d98f10cd3470072690f326a93a4debe346666b958ac0f"
+    "src/gen/trace.h": "51da5a77fcf1cc33a3886bf1217e3e0717532e0e2452d18161c080bfff54e4e4",
+    "examples/sim.c": "6d8a6eba7a52ba73cd216e296cb66c992e12dfa85ebf345c26e0db2b72568be6"
   }
 }

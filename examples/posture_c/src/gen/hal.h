@@ -14,6 +14,8 @@ typedef struct {
     /* Set by the system router; NULL in a machine on its own. */
     const void *(*payload)(void *ctx, size_t *len);
     int (*instance)(void *ctx);
+    /* One call per transition, with state and event numbers (see trace.h). */
+    void (*trace)(void *ctx, uint8_t from, uint8_t event, uint8_t to);
 } posture_hal_t;
 
 struct posture_safe_hal {

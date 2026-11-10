@@ -18,6 +18,12 @@ int logger_hal_instance(logger_safe_hal_t *hal) {
     return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
 }
 
+/* Called by machine.c only (it is not in safe_hal.h, so nodes cannot fake a trace). */
+void logger_hal_trace(logger_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to);
+void logger_hal_trace(logger_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to) {
+    if (hal->inner.trace) hal->inner.trace(hal->inner.ctx, from, event, to);
+}
+
 void logger_send_log_full(logger_safe_hal_t *hal, const void *data, size_t len) {
     if (hal->inner.send) hal->inner.send(hal->inner.ctx, LOGGER_OUT_LOG_FULL, data, len);
     else hal->inner.log(hal->inner.ctx, "LOG_FULL: no router, dropped");

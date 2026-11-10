@@ -174,8 +174,8 @@ static void gen_router_h(const SgSystem *s, GenSet *g) {
               "#ifndef %s_ROUTER_H\n#define %s_ROUTER_H\n\n#include \"sg_queue.h\"\n\n",
               S, up(S), up(S));
     for (int i = 0; i < s->n_machines; i++)
-        sb_printf(&b, "#include \"../%s/src/gen/hal.h\"\n#include \"../%s/src/gen/machine.h\"\n", s->machines[i].dir,
-                  s->machines[i].dir);
+        sb_printf(&b, "#include \"../%s/src/gen/hal.h\"\n#include \"../%s/src/gen/machine.h\"\n#include \"../%s/src/gen/trace.h\"\n",
+                  s->machines[i].dir, s->machines[i].dir, s->machines[i].dir);
     sb_printf(&b,
               "\n/* The largest payload any channel carries, in bytes. */\n#define %s_PAYLOAD_MAX %ld\n\n"
               "typedef struct {\n    int event;\n    uint16_t len;\n    uint8_t data[%s_PAYLOAD_MAX];\n} %s_msg_t;\n\n",
@@ -192,7 +192,7 @@ static void gen_router_h(const SgSystem *s, GenSet *g) {
               "\nstruct %s_system;\n\ntypedef struct {\n    struct %s_system *sys;\n    int instance;\n"
               "    const void *payload;\n    size_t payload_len;\n} %s_slot_t;\n\n",
               S, S, S);
-    sb_printf(&b, "/* Each machine's board HAL, shared by its instances. Their payload, send,\n * instance and param fields are not used: the router supplies them. */\ntypedef struct {\n");
+    sb_printf(&b, "/* Each machine's board HAL, shared by its instances. Their payload, send,\n * instance, param and trace fields are not used: the router supplies them. */\ntypedef struct {\n");
     for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "    %s_hal_t %s;\n", s->machines[i].id, s->machines[i].id);
     sb_printf(&b, "} %s_boards_t;\n\ntypedef struct %s_system {\n    %s_boards_t boards;\n", S, S, S);
     for (int i = 0; i < s->n_machines; i++) {
@@ -201,6 +201,7 @@ static void gen_router_h(const SgSystem *s, GenSet *g) {
         sb_printf(&b, "    %s_machine_t %s[%d];\n    %s_safe_hal_t %s_hal[%d];\n    %s_slot_t %s_slot[%d];\n", m, m, n, m, m, n, S, m, n);
     }
     sb_printf(&b, "    sg_queue_t queue[%s_CHANNEL_COUNT]; /* sync channels leave theirs unused */\n", up(S));
+    sb_puts(&b, "    void (*trace)(void *ctx, const uint8_t *record, size_t len);\n    void *trace_ctx;\n    uint16_t trace_seq;\n");
     for (int i = 0; i < s->n_channels; i++)
         if (is_queue(&s->channels[i])) sb_printf(&b, "    %s_msg_t storage_%d[%ld];\n", S, i, s->channels[i].depth + 1);
     sb_printf(&b, "} %s_system_t;\n\n", S);
@@ -226,8 +227,19 @@ static void gen_router_h(const SgSystem *s, GenSet *g) {
               "void %s_step_all(%s_system_t *s);\n"
               "/* Events a full queue dropped (oldest or newest), or could not take (never). */\n"
               "uint32_t %s_dropped(const %s_system_t *s, int channel);\n"
-              "size_t %s_queued(const %s_system_t *s, int channel);\n\n#endif\n",
+              "size_t %s_queued(const %s_system_t *s, int channel);\n\n",
               S, S, S, S, S, S);
+    int hsize = 5;
+    for (int i = 0; i < s->n_machines; i++) hsize += 1 + (int)strlen(s->machines[i].id) + 32;
+    sb_printf(&b,
+              "/* A transition log of the whole system (see trace.h in any machine). Write\n"
+              " * the header once, then pass a sink to %s_set_trace: it gets one record per\n"
+              " * transition, machine numbered in system.yaml order, from whichever task made\n"
+              " * it, so a sink shared by several tasks must lock. NULL turns tracing off. */\n"
+              "#define %s_TRACE_HEADER_SIZE %d\n"
+              "size_t %s_trace_header(uint8_t out[%s_TRACE_HEADER_SIZE]);\n"
+              "void %s_set_trace(%s_system_t *s, void (*sink)(void *ctx, const uint8_t *record, size_t len), void *ctx);\n\n#endif\n",
+              S, up(S), hsize, S, up(S), S, S);
     char path[256];
     snprintf(path, sizeof path, "router/%s.h", S);
     add(g, path, &b);
@@ -263,10 +275,15 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
                       "    %s_slot_t *sl = ctx;\n    sl->sys->boards.%s.log(sl->sys->boards.%s.ctx, msg);\n}\n\n",
                       m, S, m, m);
         sb_printf(&b,
+                  "static void rt_%s_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {\n"
+                  "    %s_slot_t *sl = ctx;\n    %s_system_t *s = sl->sys;\n    if (!s->trace) return;\n"
+                  "    uint8_t rec[SG_TRACE_RECORD_SIZE];\n"
+                  "    sg_trace_record(rec, (uint32_t)s->boards.%s.now_ms(s->boards.%s.ctx), s->trace_seq++, %d, (uint8_t)sl->instance, from, event, to);\n"
+                  "    s->trace(s->trace_ctx, rec, sizeof rec);\n}\n\n"
                   "static const void *rt_%s_payload(void *ctx, size_t *len) {\n"
                   "    %s_slot_t *sl = ctx;\n    *len = sl->payload_len;\n    return sl->payload;\n}\n\n"
                   "static int rt_%s_instance(void *ctx) {\n    return ((%s_slot_t *)ctx)->instance;\n}\n",
-                  m, S, m, S);
+                  m, S, S, m, m, i, m, S, m, S);
         if (mm->params.n) {
             sb_printf(&b, "\n/* [instance][param], in the order of %s's model. */\nstatic const int32_t %s_params[%d][%d] = {\n", m, m,
                       sm->instances, mm->params.n);
@@ -365,8 +382,8 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
                   "        %s_hal_t h;\n        memset(&h, 0, sizeof h);\n"
                   "        s->%s_slot[i].sys = s;\n        s->%s_slot[i].instance = i;\n        h.ctx = &s->%s_slot[i];\n"
                   "        h.now_ms = rt_%s_now_ms;\n        h.log = rt_%s_log;\n        h.payload = rt_%s_payload;\n"
-                  "        h.instance = rt_%s_instance;\n",
-                  sm->instances, m, m, m, m, m, m, m, m);
+                  "        h.instance = rt_%s_instance;\n        h.trace = rt_%s_trace;\n",
+                  sm->instances, m, m, m, m, m, m, m, m, m);
         if (sm->model.params.n) sb_printf(&b, "        h.param = rt_%s_param;\n", m);
         for (int k = 0; k < sm->model.n_hal; k++) sb_printf(&b, "        h.%s = rt_%s_%s;\n", sm->model.hal[k].call, m, sm->model.hal[k].call);
         if (sm->model.sends.n) sb_printf(&b, "        h.send = rt_%s_send;\n", m);
@@ -405,6 +422,14 @@ static void gen_router_c(const SgSystem *s, GenSet *g) {
               "size_t %s_queued(const %s_system_t *s, int channel) {\n"
               "    return sg_queue_count(&s->queue[channel]);\n}\n",
               S, S, S, S);
+    sb_printf(&b, "\nsize_t %s_trace_header(uint8_t out[%s_TRACE_HEADER_SIZE]) {\n    memcpy(out, \"SGT1\", 4);\n    out[4] = %d;\n    size_t n = 5;\n",
+              S, up(S), s->n_machines);
+    for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "    n += %s_trace_header_entry(out + n);\n", s->machines[i].id);
+    sb_printf(&b,
+              "    return n;\n}\n\n"
+              "void %s_set_trace(%s_system_t *s, void (*sink)(void *ctx, const uint8_t *record, size_t len), void *ctx) {\n"
+              "    s->trace_ctx = ctx;\n    s->trace = sink;\n}\n",
+              S, S);
     char path[256];
     snprintf(path, sizeof path, "router/%s.c", S);
     add(g, path, &b);
@@ -417,7 +442,7 @@ static void gen_router_test(const SgSystem *s, GenSet *g) {
     header(&b, "/*");
     sb_printf(&b,
               "/* Every queue channel holds its depth and then follows its drop policy; every\n"
-              " * instance sees its own number and params. */\n#include \"unity.h\"\n\n#include \"%s.h\"\n",
+              " * instance sees its own number and params; the trace names every machine. */\n#include \"unity.h\"\n\n#include \"%s.h\"\n",
               S);
     for (int i = 0; i < s->n_machines; i++) sb_printf(&b, "#include \"../%s/src/gen/fake.h\"\n", s->machines[i].dir);
     sb_puts(&b, "\n");
@@ -466,6 +491,44 @@ static void gen_router_test(const SgSystem *s, GenSet *g) {
         }
         sb_puts(&b, "}\n");
     }
+    /* The trace: a header naming every machine, then the first transition of the
+     * first machine whose initial state has one. */
+    sl_push(&names, "trace__header_names_every_machine_and_records_carry_names");
+    sb_printf(&b,
+              "\nstatic uint8_t trace_buf[64][SG_TRACE_RECORD_SIZE];\nstatic int trace_n;\n\n"
+              "static void trace_sink(void *ctx, const uint8_t *record, size_t len) {\n"
+              "    (void)ctx;\n    if (trace_n < 64 && len == SG_TRACE_RECORD_SIZE) memcpy(trace_buf[trace_n++], record, len);\n}\n\n"
+              "static void trace__header_names_every_machine_and_records_carry_names(void) {\n"
+              "    uint8_t h[%s_TRACE_HEADER_SIZE];\n"
+              "    TEST_ASSERT_EQUAL_UINT(%s_TRACE_HEADER_SIZE, %s_trace_header(h));\n"
+              "    TEST_ASSERT_EQUAL_MEMORY(\"SGT1\", h, 4);\n"
+              "    TEST_ASSERT_EQUAL_UINT8(%d, h[4]);\n"
+              "    trace_n = 0;\n    %s_set_trace(&sys, trace_sink, NULL);\n",
+              up(S), up(S), S, s->n_machines, S);
+    int done = 0;
+    for (int i = 0; i < s->n_machines && !done; i++) {
+        const SgModel *mm = &s->machines[i].model;
+        for (int k = 0; k < mm->n_states && !done; k++) {
+            const State *st = &mm->states[k];
+            if (!st->initial || !st->n_on) continue;
+            int ev = model_event_index(mm, st->on[0].event), to = -1;
+            for (int q = 0; q < mm->n_states; q++)
+                if (!strcmp(mm->states[q].id, st->on[0].target)) to = q;
+            if (ev < 0 || to < 0) continue;
+            sb_printf(&b,
+                      "    %s_post_%s(&sys, (%s_event_t)%d, NULL, 0); /* %s --%s--> %s */\n"
+                      "    TEST_ASSERT_TRUE(trace_n >= 1);\n"
+                      "    TEST_ASSERT_EQUAL_UINT8(%d, trace_buf[0][6]); /* machine: %s */\n"
+                      "    TEST_ASSERT_EQUAL_UINT8(0, trace_buf[0][7]);\n"
+                      "    TEST_ASSERT_EQUAL_UINT8(%d, trace_buf[0][8]);\n"
+                      "    TEST_ASSERT_EQUAL_UINT8(%d, trace_buf[0][9]);\n"
+                      "    TEST_ASSERT_EQUAL_UINT8(%d, trace_buf[0][10]);\n",
+                      S, s->machines[i].id, s->machines[i].id, ev, st->id, st->on[0].event, st->on[0].target, i, s->machines[i].id, k,
+                      ev, to);
+            done = 1;
+        }
+    }
+    sb_printf(&b, "    %s_set_trace(&sys, NULL, NULL);\n}\n", S);
     sb_puts(&b, "\nint main(void) {\n    UNITY_BEGIN();\n");
     for (int i = 0; i < names.n; i++) sb_printf(&b, "    RUN_TEST(%s);\n", names.v[i]);
     sb_puts(&b, "    return UNITY_END();\n}\n");

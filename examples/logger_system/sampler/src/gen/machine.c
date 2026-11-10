@@ -7,6 +7,8 @@
 
 #include "nodes.h"
 
+void sampler_hal_trace(sampler_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to); /* safe_hal.c */
+
 const char *sampler_state_id(sampler_state_t state) {
     switch (state) {
     case SAMPLER_STATE_STOPPED: return "sampler.Stopped";
@@ -85,6 +87,7 @@ sampler_outcome_t sampler_send(sampler_machine_t *m, sampler_event_t event, samp
     }
     if (!trace) return SAMPLER_IGNORED; /* an out-of-range event value */
     sampler_hal_log(hal, trace);
+    sampler_hal_trace(hal, (uint8_t)m->state, (uint8_t)event, (uint8_t)to);
     run_exit(m, hal);
     m->state = to;
     m->entered_ms = sampler_hal_now_ms(hal);

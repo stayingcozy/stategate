@@ -7,6 +7,8 @@
 
 #include "nodes.h"
 
+void posture_hal_trace(posture_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to); /* safe_hal.c */
+
 const char *posture_state_id(posture_state_t state) {
     switch (state) {
     case POSTURE_STATE_OFF: return "posture.Off";
@@ -152,6 +154,7 @@ posture_outcome_t posture_send(posture_machine_t *m, posture_event_t event, post
     }
     if (!trace) return POSTURE_IGNORED; /* an out-of-range event value */
     posture_hal_log(hal, trace);
+    posture_hal_trace(hal, (uint8_t)m->state, (uint8_t)event, (uint8_t)to);
     run_exit(m, hal);
     m->state = to;
     m->entered_ms = posture_hal_now_ms(hal);

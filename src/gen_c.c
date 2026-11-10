@@ -214,7 +214,9 @@ static void gen_hal(const SgModel *m, GenSet *g) {
         sb_printf(&b, "    void (*%s)(void *ctx, %s value);\n", m->hal[i].call, ctype(m->hal[i].arg));
     sb_puts(&b, "    /* Set by the system router; NULL in a machine on its own. */\n"
                 "    const void *(*payload)(void *ctx, size_t *len);\n"
-                "    int (*instance)(void *ctx);\n");
+                "    int (*instance)(void *ctx);\n"
+                "    /* One call per transition, with state and event numbers (see trace.h). */\n"
+                "    void (*trace)(void *ctx, uint8_t from, uint8_t event, uint8_t to);\n");
     if (m->params.n) sb_puts(&b, "    int32_t (*param)(void *ctx, int index); /* index in the model's params list */\n");
     if (m->sends.n) sb_printf(&b, "    void (*send)(void *ctx, %s_out_t event, const void *data, size_t len);\n", p);
     sb_printf(&b,
@@ -254,8 +256,13 @@ static void gen_hal(const SgModel *m, GenSet *g) {
               "}\n\n"
               "int %s_hal_instance(%s_safe_hal_t *hal) {\n"
               "    return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;\n"
+              "}\n\n"
+              "/* Called by machine.c only (it is not in safe_hal.h, so nodes cannot fake a trace). */\n"
+              "void %s_hal_trace(%s_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to);\n"
+              "void %s_hal_trace(%s_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to) {\n"
+              "    if (hal->inner.trace) hal->inner.trace(hal->inner.ctx, from, event, to);\n"
               "}\n",
-              p, p, p, p);
+              p, p, p, p, p, p, p, p);
     for (int i = 0; i < m->params.n; i++)
         sb_printf(&b,
                   "\nint32_t %s_hal_param_%s(%s_safe_hal_t *hal) {\n"
@@ -296,6 +303,9 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    /* The payload the machine sees for the event being handled. */\n"
               "    const void *payload;\n"
               "    size_t payload_len;\n"
+              "    /* Every transition, as the trace hook saw it. */\n"
+              "    struct { uint64_t at; uint8_t from, event, to; } traces[%s_FAKE_MAX];\n"
+              "    int n_traces;\n"
               "    /* The instance and params the machine sees. */\n"
               "    int instance;\n"
               "    int32_t params[%d];\n"
@@ -304,7 +314,7 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "%s_hal_t %s_fake_hal(%s_probe_t *probe);\n"
               "/* The last value passed to `call`; false if it was never called. */\n"
               "bool %s_probe_last(const %s_probe_t *probe, const char *call, int64_t *value);\n\n#endif\n",
-              P(m), P(m), P(m), P(m), P(m), m->params.n ? m->params.n : 1, p, p, p, p, p, p);
+              P(m), P(m), P(m), P(m), P(m), P(m), m->params.n ? m->params.n : 1, p, p, p, p, p, p);
     add(g, "src/gen/fake.h", &b, 0);
 
     sb_init(&b);
@@ -329,6 +339,17 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               m->n_hal || m->sends.n ? "" : "__attribute__((unused)) /* this machine declares no HAL calls */\n", p, P(m), p, p,
               P(m));
     sb_printf(&b, "\nstatic int fake_instance(void *ctx) {\n    return ((%s_probe_t *)ctx)->instance;\n}\n", p);
+    sb_printf(&b,
+              "\nstatic void fake_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {\n"
+              "    %s_probe_t *p = ctx;\n"
+              "    if (p->n_traces == %s_FAKE_MAX) return;\n"
+              "    p->traces[p->n_traces].at = p->now_ms;\n"
+              "    p->traces[p->n_traces].from = from;\n"
+              "    p->traces[p->n_traces].event = event;\n"
+              "    p->traces[p->n_traces].to = to;\n"
+              "    p->n_traces++;\n"
+              "}\n",
+              p, P(m));
     if (m->params.n)
         sb_printf(&b, "\nstatic int32_t fake_param(void *ctx, int index) {\n    return ((%s_probe_t *)ctx)->params[index];\n}\n", p);
     sb_printf(&b,
@@ -358,7 +379,8 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    h.now_ms = fake_now_ms;\n"
               "    h.log = fake_log;\n"
               "    h.payload = fake_payload;\n"
-              "    h.instance = fake_instance;\n",
+              "    h.instance = fake_instance;\n"
+              "    h.trace = fake_trace;\n",
               p, p, p, p);
     if (m->params.n) sb_puts(&b, "    h.param = fake_param;\n");
     if (m->sends.n) sb_puts(&b, "    h.send = fake_send;\n");
@@ -437,8 +459,9 @@ static void gen_machine(const SgModel *m, GenSet *g) {
               "/* Every switch lists every case and has no catch-all: the compiler, with\n"
               " * -Wswitch-enum -Werror, refuses a missing (state, event) pair. */\n"
               "#include \"machine.h\"\n\n#include <string.h>\n\n#include \"nodes.h\"\n\n"
+              "void %s_hal_trace(%s_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to); /* safe_hal.c */\n\n"
               "const char *%s_state_id(%s_state_t state) {\n    switch (state) {\n",
-              p, p);
+              p, p, p, p);
     for (int i = 0; i < m->n_states; i++)
         sb_printf(&b, "    case %s: return \"%s\";\n", st(m, m->states[i].id), m->states[i].id);
     sb_printf(&b, "    }\n    return \"?\";\n}\n\nconst char *%s_event_name(%s_event_t event) {\n    switch (event) {\n", p, p);
@@ -503,13 +526,14 @@ static void gen_machine(const SgModel *m, GenSet *g) {
               "    }\n"
               "    if (!trace) return %s_IGNORED; /* an out-of-range event value */\n"
               "    %s_hal_log(hal, trace);\n"
+              "    %s_hal_trace(hal, (uint8_t)m->state, (uint8_t)event, (uint8_t)to);\n"
               "    run_exit(m, hal);\n"
               "    m->state = to;\n"
               "    m->entered_ms = %s_hal_now_ms(hal);\n"
               "    run_entry(m, hal);\n"
               "    return %s_TRANSITION;\n"
               "}\n\n",
-              P(m), p, p, P(m));
+              P(m), p, p, p, P(m));
 
     /* services */
     sb_printf(&b, "static bool poll_services(%s_machine_t *m, %s_safe_hal_t *hal, %s_event_t *out) {\n", p, p, p);
@@ -720,6 +744,57 @@ static void gen_tests(const SgModel *m, GenSet *g) {
     add(g, "tests/invariants.c", &b, 0);
 }
 
+/* trace.h: the record format the viewer replays. A log is a header (magic,
+ * machine count, then each machine's id and model hash) followed by fixed
+ * 11-byte records, all little-endian. */
+static void gen_trace(const SgModel *m, GenSet *g) {
+    const char *p = m->id;
+    SB b;
+    sb_init(&b);
+    header(&b, m);
+    sb_printf(&b,
+              "/* The trace format stategate-view replays. Write the header once, then one\n"
+              " * record per transition (the HAL's trace hook gives you from, event and to),\n"
+              " * over any transport: a file, UART, BLE. The viewer refuses a log whose model\n"
+              " * hash is not the model it has open. */\n"
+              "#ifndef %s_TRACE_H\n#define %s_TRACE_H\n\n#include <stddef.h>\n#include <stdint.h>\n#include <string.h>\n\n"
+              "/* sha-256 of %s, the model this code was generated from. */\n"
+              "static const uint8_t %s_model_hash[32] = {",
+              P(m), P(m), m->path, p);
+    for (int i = 0; i < 32; i++) {
+        unsigned v = 0;
+        sscanf(m->hash + 2 * i, "%2x", &v);
+        sb_printf(&b, "%s0x%02x", i ? ", " : "", v);
+    }
+    sb_printf(&b,
+              "};\n\n"
+              "/* Appends one machine's entry to a header: id length, id, model hash. */\n"
+              "static inline size_t %s_trace_header_entry(uint8_t *out) {\n"
+              "    size_t n = strlen(\"%s\");\n"
+              "    out[0] = (uint8_t)n;\n"
+              "    memcpy(out + 1, \"%s\", n);\n"
+              "    memcpy(out + 1 + n, %s_model_hash, 32);\n"
+              "    return 1 + n + 32;\n"
+              "}\n\n"
+              "/* The header of a log from this machine alone. out needs %d bytes. */\n"
+              "static inline size_t %s_trace_header(uint8_t *out) {\n"
+              "    memcpy(out, \"SGT1\", 4);\n"
+              "    out[4] = 1;\n"
+              "    return 5 + %s_trace_header_entry(out + 5);\n"
+              "}\n\n"
+              "/* Shared by every machine's trace.h, so a system can include them all. */\n"
+              "#ifndef SG_TRACE_RECORD_SIZE\n"
+              "#define SG_TRACE_RECORD_SIZE 11\n\n"
+              "static inline void sg_trace_record(uint8_t out[SG_TRACE_RECORD_SIZE], uint32_t t_ms, uint16_t seq, uint8_t machine,\n"
+              "                                   uint8_t instance, uint8_t from, uint8_t event, uint8_t to) {\n"
+              "    out[0] = (uint8_t)t_ms;\n    out[1] = (uint8_t)(t_ms >> 8);\n    out[2] = (uint8_t)(t_ms >> 16);\n    out[3] = (uint8_t)(t_ms >> 24);\n"
+              "    out[4] = (uint8_t)seq;\n    out[5] = (uint8_t)(seq >> 8);\n"
+              "    out[6] = machine;\n    out[7] = instance;\n    out[8] = from;\n    out[9] = event;\n    out[10] = to;\n"
+              "}\n#endif\n\n#endif\n",
+              p, p, p, p, (int)(5 + 1 + strlen(p) + 32), p, p);
+    add(g, "src/gen/trace.h", &b, 0);
+}
+
 static void gen_sim(const SgModel *m, GenSet *g) {
     const char *p = m->id;
     SB b;
@@ -727,12 +802,19 @@ static void gen_sim(const SgModel *m, GenSet *g) {
     header(&b, m);
     sb_printf(&b,
               "/* Runs the machine on fake hardware and prints every log line.\n"
-              " * Usage: build/sim <run_ms> [EVENT ...]\n"
-              " * The listed events are sent at t = 0, in order. */\n"
-              "#include <stdio.h>\n#include <stdlib.h>\n\n"
-              "#include \"gen/fake.h\"\n#include \"gen/hal.h\"\n#include \"gen/machine.h\"\n\n"
+              " * Usage: build/sim [--trace out.sgt] <run_ms> [EVENT ...]\n"
+              " * The listed events are sent at t = 0, in order. --trace writes every\n"
+              " * transition for stategate-view to replay. */\n"
+              "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n"
+              "#include \"gen/fake.h\"\n#include \"gen/hal.h\"\n#include \"gen/machine.h\"\n#include \"gen/trace.h\"\n\n"
               "static %s_probe_t probe;\n\n"
               "int main(int argc, char **argv) {\n"
+              "    const char *trace_path = NULL;\n"
+              "    if (argc > 2 && !strcmp(argv[1], \"--trace\")) {\n"
+              "        trace_path = argv[2];\n"
+              "        argc -= 2;\n"
+              "        argv += 2;\n"
+              "    }\n"
               "    uint64_t run_ms = argc > 1 ? strtoull(argv[1], NULL, 10) : 15000;\n"
               "    %s_safe_hal_t hal = %s_safe_hal(%s_fake_hal(&probe));\n"
               "    %s_machine_t m;\n"
@@ -750,9 +832,25 @@ static void gen_sim(const SgModel *m, GenSet *g) {
               "            printf(\"%%7.1fs  %%s\\n\", (double)probe.logs[printed].at / 1000.0, probe.logs[printed].msg);\n"
               "    }\n"
               "    printf(\"final state: %%s\\n\", %s_state_id(m.state));\n"
+              "    if (trace_path) {\n"
+              "        FILE *f = fopen(trace_path, \"wb\");\n"
+              "        if (!f) {\n"
+              "            perror(trace_path);\n"
+              "            return 1;\n"
+              "        }\n"
+              "        uint8_t buf[128];\n"
+              "        fwrite(buf, 1, %s_trace_header(buf), f);\n"
+              "        for (int i = 0; i < probe.n_traces; i++) {\n"
+              "            sg_trace_record(buf, (uint32_t)probe.traces[i].at, (uint16_t)i, 0, 0, probe.traces[i].from, probe.traces[i].event,\n"
+              "                            probe.traces[i].to);\n"
+              "            fwrite(buf, 1, SG_TRACE_RECORD_SIZE, f);\n"
+              "        }\n"
+              "        fclose(f);\n"
+              "        printf(\"trace: %%d transitions written to %%s\\n\", probe.n_traces, trace_path);\n"
+              "    }\n"
               "    return 0;\n"
               "}\n",
-              p, p, p, p, p, p, p, p, p, p, p);
+              p, p, p, p, p, p, p, p, p, p, p, p);
     add(g, "examples/sim.c", &b, 0);
 }
 
@@ -763,6 +861,7 @@ void gen_c(const SgModel *m, GenSet *out) {
     gen_fake(m, out);
     gen_machine(m, out);
     gen_tests(m, out);
+    gen_trace(m, out);
     gen_sim(m, out);
     gen_scaffolds(m, out);
 }

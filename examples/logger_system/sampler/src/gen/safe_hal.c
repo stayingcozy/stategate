@@ -18,6 +18,12 @@ int sampler_hal_instance(sampler_safe_hal_t *hal) {
     return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
 }
 
+/* Called by machine.c only (it is not in safe_hal.h, so nodes cannot fake a trace). */
+void sampler_hal_trace(sampler_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to);
+void sampler_hal_trace(sampler_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to) {
+    if (hal->inner.trace) hal->inner.trace(hal->inner.ctx, from, event, to);
+}
+
 void sampler_send_tick(sampler_safe_hal_t *hal, const void *data, size_t len) {
     if (hal->inner.send) hal->inner.send(hal->inner.ctx, SAMPLER_OUT_TICK, data, len);
     else hal->inner.log(hal->inner.ctx, "TICK: no router, dropped");

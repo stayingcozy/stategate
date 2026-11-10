@@ -32,6 +32,7 @@
 #include "medit.h"
 #include "model.h"
 #include "platform.h"
+#include "trace.h"
 #include "validate.h"
 
 #ifndef SG_RESOURCE_DIR
@@ -131,6 +132,20 @@ typedef struct {
     char last_event[64];
     char flash[160];
     StrList history;
+
+    /* Log replay: a trace (SGT1) recorded on the device or the simulator,
+     * stepped through on the canvas. Only the open model's records play. */
+    SgTrace replay;
+    int have_replay;
+    char replay_path[PATH_MAX];
+    char replay_msg[256];
+    int replay_entry;    /* the header entry for this model */
+    int replay_instance; /* which copy of the machine plays */
+    int replay_n_inst;   /* instances seen in the log */
+    int replay_pos;      /* next record */
+    int replay_playing;
+    double replay_wall;  /* GetTime() when the last record played */
+    uint32_t replay_t;   /* its t_ms */
 
     Vector2 pan;
     float zoom;
@@ -281,6 +296,101 @@ static void sim_send(const char *event) {
     app.cur = to;
 }
 
+/* ---- log replay ---- */
+
+static void replay_close(void) {
+    free(app.replay.recs);
+    memset(&app.replay, 0, sizeof app.replay);
+    app.have_replay = 0;
+    app.replay_playing = 0;
+}
+
+/* The trace beside the model, or the system's one folder up. */
+static const char *replay_candidate(void) {
+    if (file_exists("trace.sgt")) return "trace.sgt";
+    if (file_exists("../system.yaml") && file_exists("../trace.sgt")) return "../trace.sgt";
+    return NULL;
+}
+
+static int replay_mine(const TraceRec *r) {
+    return r->machine == app.replay_entry && r->instance == app.replay_instance;
+}
+
+static void replay_restart(void) {
+    sim_reset();
+    app.replay_pos = 0;
+    app.replay_playing = 0;
+}
+
+/* Loads a log for the open model. One recorded from another version of the
+ * model is refused: its numbers would name the wrong states. */
+static void replay_open(const char *path) {
+    replay_close();
+    snprintf(app.replay_path, sizeof app.replay_path, "%s", path);
+    char err[256];
+    if (!app.have_model) { snprintf(app.replay_msg, sizeof app.replay_msg, "no model to replay %s on", path); return; }
+    if (trace_load(path, &app.replay, err, sizeof err) != 0) { snprintf(app.replay_msg, sizeof app.replay_msg, "%s", err); return; }
+    app.replay_entry = trace_machine_for(&app.replay, &app.model);
+    if (app.replay_entry < 0) {
+        int named = -1;
+        for (int i = 0; i < app.replay.n_machines; i++)
+            if (!strcmp(app.replay.ids[i], app.model.id)) named = i;
+        snprintf(app.replay_msg, sizeof app.replay_msg,
+                 named >= 0 ? "%s was recorded from another version of %s: run stategate gen, rebuild and record again"
+                            : "%s has no records for %s",
+                 path, app.model.id);
+        replay_close();
+        return;
+    }
+    app.replay_n_inst = 1;
+    for (int i = 0; i < app.replay.n; i++)
+        if (app.replay.recs[i].machine == app.replay_entry && app.replay.recs[i].instance + 1 > app.replay_n_inst)
+            app.replay_n_inst = app.replay.recs[i].instance + 1;
+    app.replay_instance = 0;
+    app.have_replay = 1;
+    app.replay_msg[0] = 0;
+    replay_restart();
+}
+
+/* Plays the next record of this machine and instance; 0 at the end. */
+static int replay_step(void) {
+    while (app.replay_pos < app.replay.n && !replay_mine(&app.replay.recs[app.replay_pos])) app.replay_pos++;
+    if (app.replay_pos >= app.replay.n) { app.replay_playing = 0; return 0; }
+    const TraceRec *r = &app.replay.recs[app.replay_pos++];
+    if (r->from >= app.model.n_states || r->to >= app.model.n_states || r->event >= app.model.events.n) {
+        snprintf(app.flash, sizeof app.flash, "record #%u names a state or event this model does not have", r->seq);
+        return 1;
+    }
+    char line[256];
+    trace_describe(&app.model, r, line, sizeof line);
+    sl_pushf(&app.history, "%6u ms  %s", r->t_ms, line);
+    if (app.history.n > 8) {
+        free(app.history.v[0]);
+        memmove(app.history.v, app.history.v + 1, sizeof(char *) * (size_t)(app.history.n - 1));
+        app.history.n--;
+    }
+    app.last_from = r->from;
+    app.last_to = r->to;
+    snprintf(app.last_event, sizeof app.last_event, "%s", app.model.events.v[r->event]);
+    app.flash[0] = 0;
+    app.cur = r->to;
+    app.replay_t = r->t_ms;
+    app.replay_wall = GetTime();
+    return 1;
+}
+
+/* Playing keeps the log's own timing, with gaps capped at a second. */
+static void replay_tick(void) {
+    if (!app.have_replay || !app.replay_playing) return;
+    int k = app.replay_pos;
+    while (k < app.replay.n && !replay_mine(&app.replay.recs[k])) k++;
+    if (k >= app.replay.n) { app.replay_playing = 0; return; }
+    double gap = app.replay_pos == 0 ? 0 : (double)(app.replay.recs[k].t_ms - app.replay_t) / 1000.0;
+    if (gap > 1.0) gap = 1.0;
+    if (gap < 0) gap = 0;
+    if (GetTime() - app.replay_wall >= gap) replay_step();
+}
+
 static void fit_view(void);
 
 static void grid_assign(void);
@@ -312,6 +422,10 @@ static void load_model(int first) {
     int idx = *keep ? state_index(&app.model, keep) : -1;
     if (idx < 0) sim_reset();
     else { app.cur = idx; app.last_from = app.last_to = -1; }
+    if (app.have_replay && trace_machine_for(&app.replay, &app.model) != app.replay_entry) {
+        replay_close();
+        snprintf(app.replay_msg, sizeof app.replay_msg, "the model changed: the log no longer matches it");
+    }
     grid_assign();
     if (first) app.fit_pending = 1;
 }
@@ -1353,7 +1467,7 @@ static Clay_ElementDeclaration card(void) {
 /* ---- buttons: registered while the layout is built, dispatched after ---- */
 
 typedef enum {
-    A_NONE, A_EVENT, A_RESET,
+    A_NONE, A_EVENT, A_RESET, A_REPLAY_OPEN, A_REPLAY_STEP, A_REPLAY_PLAY, A_REPLAY_RESTART, A_REPLAY_INSTANCE, A_REPLAY_CLOSE,
     A_HOME, A_INIT, A_STEP_BACK, A_STEP_FWD, A_EDIT, A_VALIDATE, A_GEN, A_SIGNOFF, A_COMMIT,
     A_TICKET_GEN, A_REVIEW, A_GATE, A_AI_FILL, A_AI_IMPL, A_AI_CONNECT, A_AI_CHECK, A_AI_CONFIG,
     A_MODAL_SEND, A_MODAL_CLOSE, A_MODAL_STOP, A_TICKET_PREV, A_TICKET_NEXT,
@@ -2160,6 +2274,37 @@ static void gate_card(void) {
     CLAY(card()) { gate_body(); }
 }
 
+static void small_button(Clay_ElementId id, const char *label, UiAction a, int arg) {
+    CLAY({.id = id, .layout = {.padding = {PX(10), PX(10), PX(6), PX(6)}},
+          .backgroundColor = Clay_Hovered() ? C_BTN_HOVER : C_BTN, .cornerRadius = CLAY_CORNER_RADIUS(PX(6))}) {
+        CLAY_TEXT(cs(label), T(14, C_INK));
+    }
+    button_reg(id, a, arg, NULL);
+}
+
+static void replay_body(void) {
+    const char *cand = replay_candidate();
+    if (!app.have_replay && !cand && !*app.replay_msg) return;
+    heading("LOG REPLAY");
+    if (*app.replay_msg) CLAY_TEXT(cs(app.replay_msg), T(14, C_RED));
+    if (!app.have_replay) {
+        if (cand) small_button(CLAY_ID("ReplayOpen"), TextFormat("Replay %s", cand), A_REPLAY_OPEN, 0);
+        return;
+    }
+    int mine = 0, done = 0;
+    for (int i = 0; i < app.replay.n; i++)
+        if (replay_mine(&app.replay.recs[i])) { mine++; if (i < app.replay_pos) done++; }
+    CLAY_TEXT(csf("%s: %d of %d transitions", app.replay_path, done, mine), T(13, C_QUIET));
+    CLAY({.layout = {.childGap = PX(6), .sizing = {.width = CLAY_SIZING_GROW(0)}}}) {
+        small_button(CLAY_ID("ReplayStep"), "Step", A_REPLAY_STEP, 0);
+        small_button(CLAY_ID("ReplayPlay"), app.replay_playing ? "Pause" : "Play", A_REPLAY_PLAY, 0);
+        small_button(CLAY_ID("ReplayRestart"), "Restart", A_REPLAY_RESTART, 0);
+        if (app.replay_n_inst > 1)
+            small_button(CLAY_ID("ReplayInst"), TextFormat("Instance %d of %d", app.replay_instance, app.replay_n_inst), A_REPLAY_INSTANCE, 0);
+        small_button(CLAY_ID("ReplayClose"), "Close", A_REPLAY_CLOSE, 0);
+    }
+}
+
 static void sim_body(void) {
     heading("SIMULATOR  (click an event)");
     if (!app.have_model) { CLAY_TEXT(cs("No model"), T(16, C_QUIET)); return; }
@@ -2195,6 +2340,7 @@ static void sim_body(void) {
     }
     if (*app.flash) CLAY_TEXT(cs(app.flash), T(14, C_AMBER));
     for (int i = app.history.n - 1; i >= 0; i--) CLAY_TEXT(cs(app.history.v[i]), T(13, i == app.history.n - 1 ? C_INK : C_QUIET));
+    replay_body();
 }
 
 static void sim_card(void) {
@@ -2486,6 +2632,8 @@ static void open_project(const char *dir) {
     app.zoom = 1.0f;
     app.pan = (Vector2){0, 0};
     sim_reset();
+    replay_close();
+    app.replay_msg[0] = 0;
     app.model_mtime = app.model_path ? file_sig(app.model_path) : 0;
     undo_clear();
     select_none();
@@ -2612,6 +2760,18 @@ static void dispatch(UiAction a, int arg) {
     case A_NONE: break;
     case A_EVENT: if (app.have_model && arg < app.model.events.n) sim_send(app.model.events.v[arg]); break;
     case A_RESET: sim_reset(); break;
+    case A_REPLAY_OPEN: { const char *p = replay_candidate(); if (p) replay_open(p); } break;
+    case A_REPLAY_STEP: app.replay_playing = 0; replay_step(); break;
+    case A_REPLAY_PLAY:
+        app.replay_playing = !app.replay_playing;
+        app.replay_wall = GetTime();
+        break;
+    case A_REPLAY_RESTART: replay_restart(); break;
+    case A_REPLAY_INSTANCE:
+        app.replay_instance = (app.replay_instance + 1) % (app.replay_n_inst ? app.replay_n_inst : 1);
+        replay_restart();
+        break;
+    case A_REPLAY_CLOSE: replay_close(); sim_reset(); break;
     case A_HOME: go_home(); break;
     case A_INIT: {
         /* One step: a repository if there is none, then stategate init. */
@@ -2862,19 +3022,23 @@ static void ui_mult_save(float m) {
 }
 
 int main(int argc, char **argv) {
-    const char *dir = NULL, *shot = NULL, *sends = NULL;
+    const char *dir = NULL, *shot = NULL, *sends = NULL, *replay = NULL;
     int windowed = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--send") && i + 1 < argc) sends = argv[++i];
+        else if (!strcmp(argv[i], "--replay") && i + 1 < argc) replay = argv[++i];
         else if (!strcmp(argv[i], "--windowed")) windowed = 1;
         else if (argv[i][0] != '-') dir = argv[i];
         else {
-            fprintf(stderr, "usage: stategate-view [project dir] [--windowed] [--send EV1,EV2] [--screenshot out.png]\n"
+            fprintf(stderr, "usage: stategate-view [project dir] [--windowed] [--send EV1,EV2] [--replay log.sgt] [--screenshot out.png]\n"
                             "  no project dir: start on the projects screen\n");
             return 2;
         }
     }
+    static char replay_abs[PATH_MAX];
+    /* Relative to where the viewer was started, not the project it opens. */
+    if (replay && sg_realpath(replay, replay_abs)) replay = replay_abs;
     find_cli();
     ai_load();
     app.zoom = 1.0f;
@@ -2914,6 +3078,10 @@ int main(int argc, char **argv) {
     no_recent = shot != NULL;
     if (dir) open_project(dir);
     if (app.screen != SCREEN_PROJECT) go_home();
+    if (replay && app.screen == SCREEN_PROJECT) {
+        replay_open(replay);
+        if (app.have_replay && shot) while (replay_step()) {}
+    }
     if (sends && app.screen == SCREEN_PROJECT) {
         char *list = xstrdup(sends), *save = NULL;
         for (char *e = strtok_r(list, ",", &save); e; e = strtok_r(NULL, ",", &save)) sim_send(e);
@@ -2938,6 +3106,7 @@ int main(int argc, char **argv) {
         }
         if (app.screen == SCREEN_PROJECT) {
             if (GetTime() - last_poll > 0.5) { poll_files(); last_poll = GetTime(); }
+            replay_tick();
             if (job_poll(&app.job) && !app.job.running) {
                 refresh_status();
                 if (!app.job.pty) app.modal = 0;

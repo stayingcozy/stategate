@@ -18,6 +18,12 @@ int device_hal_instance(device_safe_hal_t *hal) {
     return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
 }
 
+/* Called by machine.c only (it is not in safe_hal.h, so nodes cannot fake a trace). */
+void device_hal_trace(device_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to);
+void device_hal_trace(device_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to) {
+    if (hal->inner.trace) hal->inner.trace(hal->inner.ctx, from, event, to);
+}
+
 void device_send_start(device_safe_hal_t *hal, const void *data, size_t len) {
     if (hal->inner.send) hal->inner.send(hal->inner.ctx, DEVICE_OUT_START, data, len);
     else hal->inner.log(hal->inner.ctx, "START: no router, dropped");

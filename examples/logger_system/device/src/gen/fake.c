@@ -27,6 +27,16 @@ static int fake_instance(void *ctx) {
     return ((device_probe_t *)ctx)->instance;
 }
 
+static void fake_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {
+    device_probe_t *p = ctx;
+    if (p->n_traces == DEVICE_FAKE_MAX) return;
+    p->traces[p->n_traces].at = p->now_ms;
+    p->traces[p->n_traces].from = from;
+    p->traces[p->n_traces].event = event;
+    p->traces[p->n_traces].to = to;
+    p->n_traces++;
+}
+
 static const void *fake_payload(void *ctx, size_t *len) {
     device_probe_t *p = ctx;
     *len = p->payload_len;
@@ -51,6 +61,7 @@ device_hal_t device_fake_hal(device_probe_t *probe) {
     h.log = fake_log;
     h.payload = fake_payload;
     h.instance = fake_instance;
+    h.trace = fake_trace;
     h.send = fake_send;
     return h;
 }

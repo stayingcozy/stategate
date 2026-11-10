@@ -361,6 +361,19 @@ setup_c
 sed -i 's/posture_hal_log(hal, "NUDGE");/posture_hal_log(hal, "NUDGE")/' src/actions/start_nudge.c
 expect "C: node code that does not compile" tests
 
+# Traces: the simulator's log reads back by name, and a log from another
+# version of the model is refused.
+setup_c
+"$SG" gate > /dev/null 2>&1 || true
+./build/sim --trace t.sgt 15000 POWER_ON CALIBRATED SLOUCH > /dev/null
+out=$("$SG" trace show t.sgt 2>&1 || true)
+if echo "$out" | grep -q "posture.Monitoring --SLOUCH--> posture.Slouching"; then ok "trace: the simulator's log reads back by name"
+else bad "trace: the simulator's log reads back by name" "$out"; fi
+echo "# changed" >> posture.yaml
+if out=$("$SG" trace show t.sgt 2>&1); then bad "trace: a log from another model version is refused" "it was accepted"
+elif echo "$out" | grep -q "recorded from a model that is not here"; then ok "trace: a log from another model version is refused"
+else bad "trace: a log from another model version is refused" "$out"; fi
+
 # Systems: several machines in their own folders, wired by system.yaml.
 setup_sys() {
     dir="$WORK/case_sys"

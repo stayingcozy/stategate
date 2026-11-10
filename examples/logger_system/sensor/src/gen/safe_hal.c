@@ -18,6 +18,12 @@ int sensor_hal_instance(sensor_safe_hal_t *hal) {
     return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
 }
 
+/* Called by machine.c only (it is not in safe_hal.h, so nodes cannot fake a trace). */
+void sensor_hal_trace(sensor_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to);
+void sensor_hal_trace(sensor_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to) {
+    if (hal->inner.trace) hal->inner.trace(hal->inner.ctx, from, event, to);
+}
+
 int32_t sensor_hal_param_mux_ch(sensor_safe_hal_t *hal) {
     return hal->inner.param ? hal->inner.param(hal->inner.ctx, 0) : 0;
 }
