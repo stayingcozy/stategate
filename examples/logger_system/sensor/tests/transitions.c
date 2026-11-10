@@ -38,6 +38,14 @@ static void sensor_off__calibrated__ignored(void) {
     TEST_ASSERT_EQUAL_INT(SENSOR_STATE_OFF, m.state);
 }
 
+/* @covers sensor.Off ignores CAL_TIMEOUT */
+static void sensor_off__cal_timeout__ignored(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_OFF, 0);
+    TEST_ASSERT_EQUAL_INT(SENSOR_IGNORED, sensor_send(&m, SENSOR_EV_CAL_TIMEOUT, &hal));
+    TEST_ASSERT_EQUAL_INT(SENSOR_STATE_OFF, m.state);
+}
+
 /* @covers sensor.Calibrating ignores START */
 static void sensor_calibrating__start__ignored(void) {
     sensor_machine_t m;
@@ -52,6 +60,14 @@ static void sensor_calibrating__calibrated__sensor_ready(void) {
     sensor_at(&m, SENSOR_STATE_CALIBRATING, 0);
     TEST_ASSERT_EQUAL_INT(SENSOR_TRANSITION, sensor_send(&m, SENSOR_EV_CALIBRATED, &hal));
     TEST_ASSERT_EQUAL_INT(SENSOR_STATE_READY, m.state);
+}
+
+/* @covers sensor.Calibrating --CAL_TIMEOUT--> sensor.Failed */
+static void sensor_calibrating__cal_timeout__sensor_failed(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_CALIBRATING, 0);
+    TEST_ASSERT_EQUAL_INT(SENSOR_TRANSITION, sensor_send(&m, SENSOR_EV_CAL_TIMEOUT, &hal));
+    TEST_ASSERT_EQUAL_INT(SENSOR_STATE_FAILED, m.state);
 }
 
 /* @covers sensor.Ready ignores START */
@@ -70,14 +86,52 @@ static void sensor_ready__calibrated__ignored(void) {
     TEST_ASSERT_EQUAL_INT(SENSOR_STATE_READY, m.state);
 }
 
+/* @covers sensor.Ready ignores CAL_TIMEOUT */
+static void sensor_ready__cal_timeout__ignored(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_READY, 0);
+    TEST_ASSERT_EQUAL_INT(SENSOR_IGNORED, sensor_send(&m, SENSOR_EV_CAL_TIMEOUT, &hal));
+    TEST_ASSERT_EQUAL_INT(SENSOR_STATE_READY, m.state);
+}
+
+/* @covers sensor.Failed --START--> sensor.Calibrating */
+static void sensor_failed__start__sensor_calibrating(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_FAILED, 0);
+    TEST_ASSERT_EQUAL_INT(SENSOR_TRANSITION, sensor_send(&m, SENSOR_EV_START, &hal));
+    TEST_ASSERT_EQUAL_INT(SENSOR_STATE_CALIBRATING, m.state);
+}
+
+/* @covers sensor.Failed ignores CALIBRATED */
+static void sensor_failed__calibrated__ignored(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_FAILED, 0);
+    TEST_ASSERT_EQUAL_INT(SENSOR_IGNORED, sensor_send(&m, SENSOR_EV_CALIBRATED, &hal));
+    TEST_ASSERT_EQUAL_INT(SENSOR_STATE_FAILED, m.state);
+}
+
+/* @covers sensor.Failed ignores CAL_TIMEOUT */
+static void sensor_failed__cal_timeout__ignored(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_FAILED, 0);
+    TEST_ASSERT_EQUAL_INT(SENSOR_IGNORED, sensor_send(&m, SENSOR_EV_CAL_TIMEOUT, &hal));
+    TEST_ASSERT_EQUAL_INT(SENSOR_STATE_FAILED, m.state);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(starts_in__sensor_off);
     RUN_TEST(sensor_off__start__sensor_calibrating);
     RUN_TEST(sensor_off__calibrated__ignored);
+    RUN_TEST(sensor_off__cal_timeout__ignored);
     RUN_TEST(sensor_calibrating__start__ignored);
     RUN_TEST(sensor_calibrating__calibrated__sensor_ready);
+    RUN_TEST(sensor_calibrating__cal_timeout__sensor_failed);
     RUN_TEST(sensor_ready__start__ignored);
     RUN_TEST(sensor_ready__calibrated__ignored);
+    RUN_TEST(sensor_ready__cal_timeout__ignored);
+    RUN_TEST(sensor_failed__start__sensor_calibrating);
+    RUN_TEST(sensor_failed__calibrated__ignored);
+    RUN_TEST(sensor_failed__cal_timeout__ignored);
     return UNITY_END();
 }

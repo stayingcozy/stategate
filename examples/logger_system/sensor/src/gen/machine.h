@@ -12,14 +12,16 @@ typedef enum {
     SENSOR_STATE_OFF,
     SENSOR_STATE_CALIBRATING,
     SENSOR_STATE_READY,
+    SENSOR_STATE_FAILED,
 } sensor_state_t;
-#define SENSOR_STATE_COUNT 3
+#define SENSOR_STATE_COUNT 4
 
 typedef enum {
     SENSOR_EV_START,
     SENSOR_EV_CALIBRATED,
+    SENSOR_EV_CAL_TIMEOUT,
 } sensor_event_t;
-#define SENSOR_EVENT_COUNT 2
+#define SENSOR_EVENT_COUNT 3
 
 typedef enum { SENSOR_IGNORED, SENSOR_TRANSITION } sensor_outcome_t;
 

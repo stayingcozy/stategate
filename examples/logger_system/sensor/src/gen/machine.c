@@ -14,6 +14,7 @@ const char *sensor_state_id(sensor_state_t state) {
     case SENSOR_STATE_OFF: return "sensor.Off";
     case SENSOR_STATE_CALIBRATING: return "sensor.Calibrating";
     case SENSOR_STATE_READY: return "sensor.Ready";
+    case SENSOR_STATE_FAILED: return "sensor.Failed";
     }
     return "?";
 }
@@ -22,6 +23,7 @@ const char *sensor_event_name(sensor_event_t event) {
     switch (event) {
     case SENSOR_EV_START: return "START";
     case SENSOR_EV_CALIBRATED: return "CALIBRATED";
+    case SENSOR_EV_CAL_TIMEOUT: return "CAL_TIMEOUT";
     }
     return "?";
 }
@@ -44,6 +46,8 @@ static void run_entry(sensor_machine_t *m, sensor_safe_hal_t *hal) {
         break;
     case SENSOR_STATE_READY:
         break;
+    case SENSOR_STATE_FAILED:
+        break;
     }
 }
 
@@ -55,6 +59,8 @@ static void run_exit(sensor_machine_t *m, sensor_safe_hal_t *hal) {
     case SENSOR_STATE_CALIBRATING:
         break;
     case SENSOR_STATE_READY:
+        break;
+    case SENSOR_STATE_FAILED:
         break;
     }
 }
@@ -78,18 +84,28 @@ sensor_outcome_t sensor_send(sensor_machine_t *m, sensor_event_t event, sensor_s
         switch (event) {
         case SENSOR_EV_START: to = SENSOR_STATE_CALIBRATING; trace = "sensor.Off --START--> sensor.Calibrating"; break;
         case SENSOR_EV_CALIBRATED: return SENSOR_IGNORED;
+        case SENSOR_EV_CAL_TIMEOUT: return SENSOR_IGNORED;
         }
         break;
     case SENSOR_STATE_CALIBRATING:
         switch (event) {
         case SENSOR_EV_START: return SENSOR_IGNORED;
         case SENSOR_EV_CALIBRATED: to = SENSOR_STATE_READY; trace = "sensor.Calibrating --CALIBRATED--> sensor.Ready"; break;
+        case SENSOR_EV_CAL_TIMEOUT: to = SENSOR_STATE_FAILED; trace = "sensor.Calibrating --CAL_TIMEOUT--> sensor.Failed"; break;
         }
         break;
     case SENSOR_STATE_READY:
         switch (event) {
         case SENSOR_EV_START: return SENSOR_IGNORED;
         case SENSOR_EV_CALIBRATED: return SENSOR_IGNORED;
+        case SENSOR_EV_CAL_TIMEOUT: return SENSOR_IGNORED;
+        }
+        break;
+    case SENSOR_STATE_FAILED:
+        switch (event) {
+        case SENSOR_EV_START: to = SENSOR_STATE_CALIBRATING; trace = "sensor.Failed --START--> sensor.Calibrating"; break;
+        case SENSOR_EV_CALIBRATED: return SENSOR_IGNORED;
+        case SENSOR_EV_CAL_TIMEOUT: return SENSOR_IGNORED;
         }
         break;
     }
@@ -113,12 +129,15 @@ static bool poll_services(sensor_machine_t *m, sensor_safe_hal_t *hal, sensor_ev
             case SENSOR_EV_CALIBRATED:
                 return true;
             case SENSOR_EV_START:
+            case SENSOR_EV_CAL_TIMEOUT:
                 sensor_hal_log(hal, "calibrate emitted an event it does not declare in 'emits'");
                 break;
             }
         }
         return false;
     case SENSOR_STATE_READY:
+        return false;
+    case SENSOR_STATE_FAILED:
         return false;
     }
     return false;
@@ -133,8 +152,14 @@ void sensor_tick(sensor_machine_t *m, sensor_safe_hal_t *hal) {
     case SENSOR_STATE_OFF:
         break;
     case SENSOR_STATE_CALIBRATING:
+        if (elapsed >= 2000) {
+            sensor_send(m, SENSOR_EV_CAL_TIMEOUT, hal);
+            return;
+        }
         break;
     case SENSOR_STATE_READY:
+        break;
+    case SENSOR_STATE_FAILED:
         break;
     }
     if (poll_services(m, hal, &event)) sensor_send(m, event, hal);

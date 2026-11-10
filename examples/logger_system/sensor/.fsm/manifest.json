@@ -1,7 +1,7 @@
 {
   "generator": "stategate",
   "model": "sensor.yaml",
-  "model_hash": "91ed4e2cf8d05628ee3b3fd6ba84a36d26a39c64a7ab2bd821aed0757c405791",
+  "model_hash": "180124a39e359a6109c048b61e9091699b9474b7d9cdc41fe02a9deed0e136c7",
   "files": {
     "CMakeLists.txt": "af9236c0904c3ddcf161a7170a61b44b712d7bd4da296d7a4f7f5857a370b55a",
     "src/gen/safe_hal.h": "14fdfa4dcf227f083799d8c54ffb94bc3f56e5e5da7e66ef29d88943acbc07dd",
@@ -9,12 +9,12 @@
     "src/gen/safe_hal.c": "ac8149c5ac9469c13d9d8eae4e70d7431e72aa076c700e0a623188c58353b805",
     "src/gen/fake.h": "12f9dfdf8eb908f2241de17b7e76c21ac60283171ff2685237679f5a1e0a82cd",
     "src/gen/fake.c": "90e44fe30a6294fdca6df25e825edc2e3f1e4765e22b39a61e0a3c69db9c163a",
-    "src/gen/machine.h": "26e85d846a94ef835baa757b40860ac6c60e2b39bbf47b46b270536f397e4f7c",
+    "src/gen/machine.h": "5fafd13714ac1a401673aa47d82bc1acfac287794aab9d1d532bdbddb3a8efc8",
     "src/gen/nodes.h": "a0c81db3fc0e5c3c292d51774b98e19f10ef091d58ff46588e50da273d39dbe1",
-    "src/gen/machine.c": "4c50e8e5e81192f52fa46b1b673096f7ac44e8e37553c2084f34016a6752f8c2",
-    "tests/transitions.c": "c72fff8de7f2df6b8df525e23db984ff6e357a3737b023675a2ea84beb3a9845",
-    "tests/invariants.c": "3b02bca691c1447b2a95dd82878f1e078d7299fc69f0269c712600b9b0c20bd5",
-    "src/gen/trace.h": "60000285695ed5af11ea6355bacd61d23a4a9defed1b77115d78eba57e1d9f19",
+    "src/gen/machine.c": "eb72c10f3c2ec59a7483a6bc2e8a876144fc5fc24a7070d18ac5461755bd6f45",
+    "tests/transitions.c": "bf15760eb4d232bb64c8ee923eecdb3b4fadad95a22b3c4431f83953e73e593b",
+    "tests/invariants.c": "f8546eb8872cf6e49b126c166228133b87d9683ed89c119d132b8b9401350e20",
+    "src/gen/trace.h": "20089d39785c42b70d7a3561fc05d038708efbe769793f45a56cb72149ddc2bc",
     "examples/sim.c": "a2803d1858d4f0b82b1ceccb84dcae249420035aa403c04c345c1b437781ee7a"
   }
 }

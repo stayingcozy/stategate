@@ -393,7 +393,7 @@ setup_sys
 expect_sys "system: untouched example is green" "SYSTEM GATE GREEN  4 machines"
 
 setup_sys
-sed -i 's/^sends: \[TICK\]/sends: []/' sampler/sampler.yaml
+sed -i 's/^sends: \[TICK\]/sends: []/; /    emits: \[TICK\]/d' sampler/sampler.yaml
 expect_sys "system: a channel carries an event its sender does not send" "but sampler does not list TICK under 'sends'"
 
 setup_sys
@@ -448,6 +448,26 @@ expect_sys "instances: a param needs one value per instance" "param mux_ch needs
 setup_sys
 sed -i 's/, params: { mux_ch: \[0, 1\] }//' system.yaml
 expect_sys "instances: a param the model reads has no values" "machine sensor reads param mux_ch"
+
+setup_sys
+sed -i 's/device_send_stop(hal, NULL, 0);/device_send_start(hal, NULL, 0);/' device/src/actions/stop_all.c
+expect_sys "emits: a node sends an event it does not list" "sends START, which this node does not list in 'emits'"
+
+setup_sys
+sed -i 's/  stop_all: { emits: \[STOP\], note:/  stop_all: { note:/' device/device.yaml
+expect_sys "emits: a sent event no node emits" "STOP is under 'sends' but no action or service lists it in 'emits'"
+
+setup_sys
+sed -i 's/  write_tick: { stub: true, note:/  write_tick: { stub: true, emits: [DISK_FULL], note:/' logger/logger.yaml
+expect_sys "emits: an action emits its own machine's event" "action write_tick emits DISK_FULL, which is not under 'sends'"
+
+setup_sys
+sed -i '/after: { ms: 2000, event: CAL_TIMEOUT }/d' sensor/sensor.yaml
+expect_sys "waits_for: a state waits for a reply with no timeout" "waits for CALIBRATED with no 'after' timeout"
+
+setup_sys
+sed -i 's/after: { ms: 2000, event: CAL_TIMEOUT }/after: { ms: 5000, event: CAL_TIMEOUT }/' sensor/sensor.yaml
+expect_sys "waits_for: the timeout is later than the limit" "gives up after 5000 ms, later than its 2000 ms limit"
 
 setup_sys
 echo "/* tweak */" >> sampler/src/gen/machine.c

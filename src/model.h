@@ -46,6 +46,7 @@ typedef struct {
     char *id;
     int stub, locked;
     char *note;
+    StrList emits; /* events it sends to other machines (from `sends`) */
     Resource *uses;
     int n_uses;
     int line;
@@ -56,7 +57,7 @@ typedef struct {
     int stub, locked;
     char *fidelity;
     char *note;
-    StrList emits;
+    StrList emits; /* its machine's own events, or events from `sends` */
     Resource *uses;
     int n_uses;
     int line;
@@ -67,6 +68,7 @@ typedef enum {
     INV_EVERY_STATE_HANDLES,
     INV_MAX_TIME_IN_STATE,
     INV_HAL_CLAMP,
+    INV_WAITS_FOR,
 } InvKind;
 
 typedef struct {
@@ -75,7 +77,7 @@ typedef struct {
     InvKind kind;
     char *kind_name;
     char *event, *target;             /* every_state_handles */
-    char *state, *exit_event;         /* max_time_in_state */
+    char *state, *exit_event;         /* max_time_in_state; waits_for: state, event, limit_ms */
     long limit_ms;
     char *call;                       /* hal_clamp */
     long max;

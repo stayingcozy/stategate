@@ -35,7 +35,7 @@ states:
 
 actions:
   write_tick: { stub: true, note: "append the tick to the open file" }
-  report_full: { stub: true, note: "send LOG_FULL to the device" }
+  report_full: { stub: true, emits: [LOG_FULL], note: "send LOG_FULL to the device" }
 
 services:
   storage:

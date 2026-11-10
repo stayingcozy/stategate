@@ -2,7 +2,7 @@
 
 machine: { id: sensor, version: 1, language: c }
 
-events: [START, CALIBRATED]
+events: [START, CALIBRATED, CAL_TIMEOUT]
 params: [mux_ch]   # which I2C mux channel this instance sits on
 
 states:
@@ -11,24 +11,37 @@ states:
     initial: true
     on:
       START: sensor.Calibrating
-    ignore: [CALIBRATED]
+    ignore: [CALIBRATED, CAL_TIMEOUT]
     layout: { x: 60, y: 120 }
 
   - id: sensor.Calibrating
     name: Calibrating
     invoke: [calibrate]
+    after: { ms: 2000, event: CAL_TIMEOUT }
     on:
       CALIBRATED: sensor.Ready
+      CAL_TIMEOUT: sensor.Failed
     ignore: [START]
     layout: { x: 360, y: 120 }
 
   - id: sensor.Ready
     name: Ready
-    ignore: [START, CALIBRATED]
+    ignore: [START, CALIBRATED, CAL_TIMEOUT]
     layout: { x: 660, y: 120 }
+
+  - id: sensor.Failed
+    name: Failed
+    on:
+      START: sensor.Calibrating
+    ignore: [CALIBRATED, CAL_TIMEOUT]
+    layout: { x: 360, y: 300 }
 
 services:
   calibrate: { stub: true, emits: [CALIBRATED], note: "select mux_ch, load stored calibration, report CALIBRATED" }
+
+invariants:
+  # A sensor that never answers must not hold up the system.
+  - { id: inv.calibration_times_out, kind: waits_for, state: sensor.Calibrating, event: CALIBRATED, limit_ms: 2000 }
 
 steps:
   - { id: step0, goal: "Each sensor reports calibrated", status: active }

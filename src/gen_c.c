@@ -735,6 +735,29 @@ static void gen_tests(const SgModel *m, GenSet *g) {
                       "    TEST_ASSERT_EQUAL_INT64(%ld, last);\n}\n",
                       v->id, v->call, v->max, vid, v->call, v->max, p, v->call, cmax(h ? h->arg : "u8"), p, v->call, v->max);
             sl_pushf(&inv, "%s__%s_clamped_to_%ld", vid, v->call, v->max);
+        } else if (v->kind == INV_WAITS_FOR) {
+            char *sid = id_to_snake(v->state);
+            const State *s = model_state(m, v->state);
+            const char *reply_to = s ? state_target(s, v->event) : NULL;
+            char *evl = xstrdup(v->event);
+            for (char *c = evl; *c; c++) *c = (char)tolower((unsigned char)*c);
+            sb_printf(&b,
+                      "\n/* @covers %s: %s takes %s */\nstatic void %s__%s_takes_%s(void) {\n"
+                      "    %s_machine_t m;\n    %s_at(&m, %s, 0);\n"
+                      "    %s_send(&m, %s, &hal);\n    TEST_ASSERT_EQUAL_INT(%s, m.state);\n}\n",
+                      v->id, v->state, v->event, vid, sid, evl, p, p, st(m, v->state), p, ev(m, v->event),
+                      st(m, reply_to ? reply_to : v->state));
+            sb_printf(&b,
+                      "\n/* @covers %s: %s gives up on %s by %ld ms */\nstatic void %s__%s_gives_up_by_%ld_ms(void) {\n"
+                      "    %s_machine_t m;\n    %s_at(&m, %s, 0);\n"
+                      "    probe.now_ms = %ld;\n    %s_tick(&m, &hal);\n"
+                      "    TEST_ASSERT_NOT_EQUAL_INT(%s, m.state);\n}\n",
+                      v->id, v->state, v->event, v->limit_ms, vid, sid, v->limit_ms, p, p, st(m, v->state), v->limit_ms, p,
+                      st(m, v->state));
+            sl_pushf(&inv, "%s__%s_takes_%s", vid, sid, evl);
+            sl_pushf(&inv, "%s__%s_gives_up_by_%ld_ms", vid, sid, v->limit_ms);
+            free(evl);
+            free(sid);
         }
         free(vid);
     }
@@ -870,7 +893,47 @@ void gen_c(const SgModel *m, GenSet *out) {
 
 /* No `default:` in generated C, and no node file reaching past the safe HAL:
  * nodes include gen/nodes.h (or gen/safe_hal.h), never gen/hal.h or the fake. */
-void c_check_wildcards(const GenSet *g, StrList *e) {
+/* The emits a node file may send: src/actions/<id>.c or src/services/<id>.c.
+ * NULL for any other file. */
+static const StrList *node_emits(const SgModel *m, const char *path) {
+    char id[128];
+    if (sscanf(path, "src/actions/%127[^.].c", id) == 1) {
+        const Action *a = model_action(m, id);
+        return a ? &a->emits : NULL;
+    }
+    if (sscanf(path, "src/services/%127[^.].c", id) == 1) {
+        const Service *s = model_service(m, id);
+        return s ? &s->emits : NULL;
+    }
+    return NULL;
+}
+
+/* A node sends only what its `emits` lists: each `<m>_send_<event>(` call in
+ * its file must name one. */
+static void check_send_scope(const SgModel *m, const char *path, const char *src, StrList *e) {
+    const StrList *emits = node_emits(m, path);
+    if (!emits) return;
+    char pre[160];
+    snprintf(pre, sizeof pre, "%s_send_", m->id);
+    size_t pn = strlen(pre);
+    int line = 1;
+    for (const char *p = src; *p; p++) {
+        if (*p == '\n') { line++; continue; }
+        if (strncmp(p, pre, pn) || (p > src && (isalnum((unsigned char)p[-1]) || p[-1] == '_'))) continue;
+        const char *q = p + pn;
+        char ev[128];
+        size_t k = 0;
+        while ((isalnum((unsigned char)*q) || *q == '_') && k < sizeof ev - 1) ev[k++] = (char)toupper((unsigned char)*q++);
+        ev[k] = 0;
+        while (*q == ' ' || *q == '\t') q++;
+        if (*q != '(' || !k) continue;
+        if (!sl_contains(emits, ev))
+            sl_pushf(e, "%s:%d: sends %s, which this node does not list in 'emits'", path, line, ev);
+        p = q;
+    }
+}
+
+void c_check_wildcards(const SgModel *m, const GenSet *g, StrList *e) {
     for (int i = 0; i < g->n; i++) {
         const GenFile *f = &g->v[i];
         size_t n = strlen(f->path);
@@ -878,6 +941,7 @@ void c_check_wildcards(const GenSet *g, StrList *e) {
         if (!is_c) continue;
         char *disk = read_file(f->path, NULL);
         if (!disk) continue;
+        if (f->scaffold) check_send_scope(m, f->path, disk, e);
         int line = 1;
         for (char *p = disk; *p; p++) {
             if (*p == '\n') { line++; continue; }

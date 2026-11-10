@@ -15,7 +15,26 @@ void setUp(void) {
 
 void tearDown(void) {}
 
+/* @covers inv.calibration_times_out: sensor.Calibrating takes CALIBRATED */
+static void inv_calibration_times_out__sensor_calibrating_takes_calibrated(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_CALIBRATING, 0);
+    sensor_send(&m, SENSOR_EV_CALIBRATED, &hal);
+    TEST_ASSERT_EQUAL_INT(SENSOR_STATE_READY, m.state);
+}
+
+/* @covers inv.calibration_times_out: sensor.Calibrating gives up on CALIBRATED by 2000 ms */
+static void inv_calibration_times_out__sensor_calibrating_gives_up_by_2000_ms(void) {
+    sensor_machine_t m;
+    sensor_at(&m, SENSOR_STATE_CALIBRATING, 0);
+    probe.now_ms = 2000;
+    sensor_tick(&m, &hal);
+    TEST_ASSERT_NOT_EQUAL_INT(SENSOR_STATE_CALIBRATING, m.state);
+}
+
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(inv_calibration_times_out__sensor_calibrating_takes_calibrated);
+    RUN_TEST(inv_calibration_times_out__sensor_calibrating_gives_up_by_2000_ms);
     return UNITY_END();
 }
