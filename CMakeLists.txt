@@ -54,6 +54,7 @@ add_library(sgcore STATIC
   src/model.c
   src/medit.c
   src/resources.c
+  src/trace.c
   src/validate.c)
 target_include_directories(sgcore PUBLIC src)
 target_compile_definitions(sgcore PUBLIC _GNU_SOURCE)

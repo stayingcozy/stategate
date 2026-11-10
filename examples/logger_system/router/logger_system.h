@@ -14,12 +14,16 @@
 
 #include "../device/src/gen/hal.h"
 #include "../device/src/gen/machine.h"
+#include "../device/src/gen/trace.h"
 #include "../sampler/src/gen/hal.h"
 #include "../sampler/src/gen/machine.h"
+#include "../sampler/src/gen/trace.h"
 #include "../logger/src/gen/hal.h"
 #include "../logger/src/gen/machine.h"
+#include "../logger/src/gen/trace.h"
 #include "../sensor/src/gen/hal.h"
 #include "../sensor/src/gen/machine.h"
+#include "../sensor/src/gen/trace.h"
 
 /* The largest payload any channel carries, in bytes. */
 #define LOGGER_SYSTEM_PAYLOAD_MAX 64
@@ -54,7 +58,7 @@ typedef struct {
 } logger_system_slot_t;
 
 /* Each machine's board HAL, shared by its instances. Their payload, send,
- * instance and param fields are not used: the router supplies them. */
+ * instance, param and trace fields are not used: the router supplies them. */
 typedef struct {
     device_hal_t device;
     sampler_hal_t sampler;
@@ -77,6 +81,9 @@ typedef struct logger_system_system {
     sensor_safe_hal_t sensor_hal[2];
     logger_system_slot_t sensor_slot[2];
     sg_queue_t queue[LOGGER_SYSTEM_CHANNEL_COUNT]; /* sync channels leave theirs unused */
+    void (*trace)(void *ctx, const uint8_t *record, size_t len);
+    void *trace_ctx;
+    uint16_t trace_seq;
     logger_system_msg_t storage_5[65];
     logger_system_msg_t storage_6[5];
 } logger_system_system_t;
@@ -107,5 +114,13 @@ void logger_system_step_all(logger_system_system_t *s);
 /* Events a full queue dropped (oldest or newest), or could not take (never). */
 uint32_t logger_system_dropped(const logger_system_system_t *s, int channel);
 size_t logger_system_queued(const logger_system_system_t *s, int channel);
+
+/* A transition log of the whole system (see trace.h in any machine). Write
+ * the header once, then pass a sink to logger_system_set_trace: it gets one record per
+ * transition, machine numbered in system.yaml order, from whichever task made
+ * it, so a sink shared by several tasks must lock. NULL turns tracing off. */
+#define LOGGER_SYSTEM_TRACE_HEADER_SIZE 162
+size_t logger_system_trace_header(uint8_t out[LOGGER_SYSTEM_TRACE_HEADER_SIZE]);
+void logger_system_set_trace(logger_system_system_t *s, void (*sink)(void *ctx, const uint8_t *record, size_t len), void *ctx);
 
 #endif

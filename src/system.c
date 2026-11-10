@@ -1,4 +1,5 @@
 #include "system.h"
+#include "trace.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -384,6 +385,16 @@ int cmd_system(const char *cmd, int argc, char **argv, const char *argv0) {
         StrList e = {0};
         system_load(SYSTEM_PATH, &s, &e);
         return system_mermaid(&s);
+    }
+    if (!strcmp(cmd, "trace")) {
+        if (argc < 2 || strcmp(argv[0], "show")) { fprintf(stderr, "usage: stategate trace show <file>\n"); return 2; }
+        StrList e = {0};
+        system_load(SYSTEM_PATH, &s, &e);
+        const SgModel *ms[64];
+        int n = 0;
+        for (int i = 0; i < s.n_machines && n < 64; i++)
+            if (s.machines[i].model.hash) ms[n++] = &s.machines[i].model;
+        return trace_show(argv[1], ms, n);
     }
     if (!strcmp(cmd, "gen")) {
         StrList e = {0};

@@ -7,6 +7,8 @@
 
 #include "nodes.h"
 
+void device_hal_trace(device_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to); /* safe_hal.c */
+
 const char *device_state_id(device_state_t state) {
     switch (state) {
     case DEVICE_STATE_IDLE: return "device.Idle";
@@ -97,6 +99,7 @@ device_outcome_t device_send(device_machine_t *m, device_event_t event, device_s
     }
     if (!trace) return DEVICE_IGNORED; /* an out-of-range event value */
     device_hal_log(hal, trace);
+    device_hal_trace(hal, (uint8_t)m->state, (uint8_t)event, (uint8_t)to);
     run_exit(m, hal);
     m->state = to;
     m->entered_ms = device_hal_now_ms(hal);

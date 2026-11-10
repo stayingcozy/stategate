@@ -17,6 +17,9 @@ typedef struct {
     /* The payload the machine sees for the event being handled. */
     const void *payload;
     size_t payload_len;
+    /* Every transition, as the trace hook saw it. */
+    struct { uint64_t at; uint8_t from, event, to; } traces[DEVICE_FAKE_MAX];
+    int n_traces;
     /* The instance and params the machine sees. */
     int instance;
     int32_t params[1];

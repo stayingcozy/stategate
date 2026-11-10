@@ -7,6 +7,7 @@
 #include "mcp.h"
 #include "platform.h"
 #include "system.h"
+#include "trace.h"
 #include "ticket.h"
 #include "version.h"
 
@@ -25,9 +26,10 @@ static int usage(void) {
             "                     start [<id>] | prompt [<id> | --drafts] | run | next | done <id>\n"
             "                     split <id> \"title\" \"title\" ...   (start and split: architect only)\n"
             "  export mermaid     print the machine as a Mermaid state diagram\n"
+            "  trace show <file>  print a transition log (SGT1) by state and event name\n"
             "\n"
             "In a folder with system.yaml (several machines, each in its own folder):\n"
-            "  validate | gen | gate [--release] | init | export mermaid\n"
+            "  validate | gen | gate [--release] | init | export mermaid | trace show <file>\n"
             "                     the wiring checks, then the same command in every machine's folder\n"
             "\n"
             "  mcp                serve the AI steps as MCP tools over stdin/stdout\n"
@@ -98,5 +100,15 @@ int main(int argc, char **argv) {
     if (!strcmp(cmd, "gate")) return cmd_gate(model, i < argc && !strcmp(argv[i], "--release"));
     if (!strcmp(cmd, "mcp")) return cmd_mcp(model, argv[0]);
     if (!strcmp(cmd, "export") && i < argc && !strcmp(argv[i], "mermaid")) return cmd_export_mermaid(model);
+    if (!strcmp(cmd, "trace") && i + 1 < argc && !strcmp(argv[i], "show")) {
+        SgModel m;
+        StrList e = {0};
+        if (model_load(model, &m, &e) != 0 && !m.hash) {
+            for (int k = 0; k < e.n; k++) fprintf(stderr, "%s\n", e.v[k]);
+            return 1;
+        }
+        const SgModel *ms[1] = {&m};
+        return trace_show(argv[i + 1], ms, 1);
+    }
     return usage();
 }

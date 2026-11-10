@@ -7,6 +7,8 @@
 
 #include "nodes.h"
 
+void logger_hal_trace(logger_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to); /* safe_hal.c */
+
 const char *logger_state_id(logger_state_t state) {
     switch (state) {
     case LOGGER_STATE_READY: return "logger.Ready";
@@ -102,6 +104,7 @@ logger_outcome_t logger_send(logger_machine_t *m, logger_event_t event, logger_s
     }
     if (!trace) return LOGGER_IGNORED; /* an out-of-range event value */
     logger_hal_log(hal, trace);
+    logger_hal_trace(hal, (uint8_t)m->state, (uint8_t)event, (uint8_t)to);
     run_exit(m, hal);
     m->state = to;
     m->entered_ms = logger_hal_now_ms(hal);

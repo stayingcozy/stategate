@@ -7,6 +7,8 @@
 
 #include "nodes.h"
 
+void sensor_hal_trace(sensor_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to); /* safe_hal.c */
+
 const char *sensor_state_id(sensor_state_t state) {
     switch (state) {
     case SENSOR_STATE_OFF: return "sensor.Off";
@@ -93,6 +95,7 @@ sensor_outcome_t sensor_send(sensor_machine_t *m, sensor_event_t event, sensor_s
     }
     if (!trace) return SENSOR_IGNORED; /* an out-of-range event value */
     sensor_hal_log(hal, trace);
+    sensor_hal_trace(hal, (uint8_t)m->state, (uint8_t)event, (uint8_t)to);
     run_exit(m, hal);
     m->state = to;
     m->entered_ms = sensor_hal_now_ms(hal);

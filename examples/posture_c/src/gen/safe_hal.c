@@ -23,3 +23,9 @@ const void *posture_hal_payload(posture_safe_hal_t *hal, size_t *len) {
 int posture_hal_instance(posture_safe_hal_t *hal) {
     return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
 }
+
+/* Called by machine.c only (it is not in safe_hal.h, so nodes cannot fake a trace). */
+void posture_hal_trace(posture_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to);
+void posture_hal_trace(posture_safe_hal_t *hal, uint8_t from, uint8_t event, uint8_t to) {
+    if (hal->inner.trace) hal->inner.trace(hal->inner.ctx, from, event, to);
+}

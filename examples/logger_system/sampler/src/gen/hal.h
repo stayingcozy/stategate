@@ -13,6 +13,8 @@ typedef struct {
     /* Set by the system router; NULL in a machine on its own. */
     const void *(*payload)(void *ctx, size_t *len);
     int (*instance)(void *ctx);
+    /* One call per transition, with state and event numbers (see trace.h). */
+    void (*trace)(void *ctx, uint8_t from, uint8_t event, uint8_t to);
     void (*send)(void *ctx, sampler_out_t event, const void *data, size_t len);
 } sampler_hal_t;
 

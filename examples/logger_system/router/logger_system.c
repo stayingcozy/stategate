@@ -16,6 +16,15 @@ static void rt_device_log(void *ctx, const char *msg) {
     sl->sys->boards.device.log(sl->sys->boards.device.ctx, msg);
 }
 
+static void rt_device_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {
+    logger_system_slot_t *sl = ctx;
+    logger_system_system_t *s = sl->sys;
+    if (!s->trace) return;
+    uint8_t rec[SG_TRACE_RECORD_SIZE];
+    sg_trace_record(rec, (uint32_t)s->boards.device.now_ms(s->boards.device.ctx), s->trace_seq++, 0, (uint8_t)sl->instance, from, event, to);
+    s->trace(s->trace_ctx, rec, sizeof rec);
+}
+
 static const void *rt_device_payload(void *ctx, size_t *len) {
     logger_system_slot_t *sl = ctx;
     *len = sl->payload_len;
@@ -38,6 +47,15 @@ static void rt_sampler_log(void *ctx, const char *msg) {
     sl->sys->boards.sampler.log(sl->sys->boards.sampler.ctx, msg);
 }
 
+static void rt_sampler_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {
+    logger_system_slot_t *sl = ctx;
+    logger_system_system_t *s = sl->sys;
+    if (!s->trace) return;
+    uint8_t rec[SG_TRACE_RECORD_SIZE];
+    sg_trace_record(rec, (uint32_t)s->boards.sampler.now_ms(s->boards.sampler.ctx), s->trace_seq++, 1, (uint8_t)sl->instance, from, event, to);
+    s->trace(s->trace_ctx, rec, sizeof rec);
+}
+
 static const void *rt_sampler_payload(void *ctx, size_t *len) {
     logger_system_slot_t *sl = ctx;
     *len = sl->payload_len;
@@ -58,6 +76,15 @@ static uint64_t rt_logger_now_ms(void *ctx) {
 static void rt_logger_log(void *ctx, const char *msg) {
     logger_system_slot_t *sl = ctx;
     sl->sys->boards.logger.log(sl->sys->boards.logger.ctx, msg);
+}
+
+static void rt_logger_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {
+    logger_system_slot_t *sl = ctx;
+    logger_system_system_t *s = sl->sys;
+    if (!s->trace) return;
+    uint8_t rec[SG_TRACE_RECORD_SIZE];
+    sg_trace_record(rec, (uint32_t)s->boards.logger.now_ms(s->boards.logger.ctx), s->trace_seq++, 2, (uint8_t)sl->instance, from, event, to);
+    s->trace(s->trace_ctx, rec, sizeof rec);
 }
 
 static const void *rt_logger_payload(void *ctx, size_t *len) {
@@ -83,6 +110,15 @@ static void rt_sensor_log(void *ctx, const char *msg) {
     char line[192];
     snprintf(line, sizeof line, "[%d] %s", sl->instance, msg);
     sl->sys->boards.sensor.log(sl->sys->boards.sensor.ctx, line);
+}
+
+static void rt_sensor_trace(void *ctx, uint8_t from, uint8_t event, uint8_t to) {
+    logger_system_slot_t *sl = ctx;
+    logger_system_system_t *s = sl->sys;
+    if (!s->trace) return;
+    uint8_t rec[SG_TRACE_RECORD_SIZE];
+    sg_trace_record(rec, (uint32_t)s->boards.sensor.now_ms(s->boards.sensor.ctx), s->trace_seq++, 3, (uint8_t)sl->instance, from, event, to);
+    s->trace(s->trace_ctx, rec, sizeof rec);
 }
 
 static const void *rt_sensor_payload(void *ctx, size_t *len) {
@@ -236,6 +272,7 @@ void logger_system_init(logger_system_system_t *s, const logger_system_boards_t 
         h.log = rt_device_log;
         h.payload = rt_device_payload;
         h.instance = rt_device_instance;
+        h.trace = rt_device_trace;
         h.send = rt_device_send;
         s->device_hal[i] = device_safe_hal(h);
     }
@@ -249,6 +286,7 @@ void logger_system_init(logger_system_system_t *s, const logger_system_boards_t 
         h.log = rt_sampler_log;
         h.payload = rt_sampler_payload;
         h.instance = rt_sampler_instance;
+        h.trace = rt_sampler_trace;
         h.send = rt_sampler_send;
         s->sampler_hal[i] = sampler_safe_hal(h);
     }
@@ -262,6 +300,7 @@ void logger_system_init(logger_system_system_t *s, const logger_system_boards_t 
         h.log = rt_logger_log;
         h.payload = rt_logger_payload;
         h.instance = rt_logger_instance;
+        h.trace = rt_logger_trace;
         h.send = rt_logger_send;
         s->logger_hal[i] = logger_safe_hal(h);
     }
@@ -275,6 +314,7 @@ void logger_system_init(logger_system_system_t *s, const logger_system_boards_t 
         h.log = rt_sensor_log;
         h.payload = rt_sensor_payload;
         h.instance = rt_sensor_instance;
+        h.trace = rt_sensor_trace;
         h.param = rt_sensor_param;
         s->sensor_hal[i] = sensor_safe_hal(h);
     }
@@ -321,4 +361,20 @@ uint32_t logger_system_dropped(const logger_system_system_t *s, int channel) {
 
 size_t logger_system_queued(const logger_system_system_t *s, int channel) {
     return sg_queue_count(&s->queue[channel]);
+}
+
+size_t logger_system_trace_header(uint8_t out[LOGGER_SYSTEM_TRACE_HEADER_SIZE]) {
+    memcpy(out, "SGT1", 4);
+    out[4] = 4;
+    size_t n = 5;
+    n += device_trace_header_entry(out + n);
+    n += sampler_trace_header_entry(out + n);
+    n += logger_trace_header_entry(out + n);
+    n += sensor_trace_header_entry(out + n);
+    return n;
+}
+
+void logger_system_set_trace(logger_system_system_t *s, void (*sink)(void *ctx, const uint8_t *record, size_t len), void *ctx) {
+    s->trace_ctx = ctx;
+    s->trace = sink;
 }
