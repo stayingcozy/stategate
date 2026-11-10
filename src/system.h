@@ -13,6 +13,9 @@ typedef struct {
     char *dir; /* relative to the system root */
     SgModel model;
     int loaded; /* model loaded and passed checks 1-3 */
+    int instances; /* copies of this machine, each with its own state (default 1) */
+    StrList param_names;
+    long *param_values; /* [instance][param], param_names.n per instance */
     int line;
 } SysMachine;
 

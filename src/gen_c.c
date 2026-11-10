@@ -179,8 +179,13 @@ static void gen_hal(const SgModel *m, GenSet *g) {
     sb_printf(&b,
               "\n/* The payload of the event being handled now (opaque bytes, e.g. an encoded\n"
               " * protobuf message), or NULL with *len = 0 when it carries none. */\n"
-              "const void *%s_hal_payload(%s_safe_hal_t *hal, size_t *len);\n",
-              p, p);
+              "const void *%s_hal_payload(%s_safe_hal_t *hal, size_t *len);\n"
+              "/* Which copy of this machine is running (0 unless system.yaml gives it instances). */\n"
+              "int %s_hal_instance(%s_safe_hal_t *hal);\n",
+              p, p, p, p);
+    for (int i = 0; i < m->params.n; i++)
+        sb_printf(&b, "/* This instance's %s, from system.yaml. */\nint32_t %s_hal_param_%s(%s_safe_hal_t *hal);\n", m->params.v[i], p,
+                  m->params.v[i], p);
     for (int i = 0; i < m->sends.n; i++) {
         char *lo = xstrdup(m->sends.v[i]);
         for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
@@ -208,7 +213,9 @@ static void gen_hal(const SgModel *m, GenSet *g) {
     for (int i = 0; i < m->n_hal; i++)
         sb_printf(&b, "    void (*%s)(void *ctx, %s value);\n", m->hal[i].call, ctype(m->hal[i].arg));
     sb_puts(&b, "    /* Set by the system router; NULL in a machine on its own. */\n"
-                "    const void *(*payload)(void *ctx, size_t *len);\n");
+                "    const void *(*payload)(void *ctx, size_t *len);\n"
+                "    int (*instance)(void *ctx);\n");
+    if (m->params.n) sb_puts(&b, "    int32_t (*param)(void *ctx, int index); /* index in the model's params list */\n");
     if (m->sends.n) sb_printf(&b, "    void (*send)(void *ctx, %s_out_t event, const void *data, size_t len);\n", p);
     sb_printf(&b,
               "} %s_hal_t;\n\n"
@@ -244,8 +251,17 @@ static void gen_hal(const SgModel *m, GenSet *g) {
               "\nconst void *%s_hal_payload(%s_safe_hal_t *hal, size_t *len) {\n"
               "    *len = 0;\n"
               "    return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;\n"
+              "}\n\n"
+              "int %s_hal_instance(%s_safe_hal_t *hal) {\n"
+              "    return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;\n"
               "}\n",
-              p, p);
+              p, p, p, p);
+    for (int i = 0; i < m->params.n; i++)
+        sb_printf(&b,
+                  "\nint32_t %s_hal_param_%s(%s_safe_hal_t *hal) {\n"
+                  "    return hal->inner.param ? hal->inner.param(hal->inner.ctx, %d) : 0;\n"
+                  "}\n",
+                  p, m->params.v[i], p, i);
     for (int i = 0; i < m->sends.n; i++) {
         char *lo = xstrdup(m->sends.v[i]);
         for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
@@ -280,12 +296,15 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    /* The payload the machine sees for the event being handled. */\n"
               "    const void *payload;\n"
               "    size_t payload_len;\n"
+              "    /* The instance and params the machine sees. */\n"
+              "    int instance;\n"
+              "    int32_t params[%d];\n"
               "} %s_probe_t;\n\n"
               "/* Clears the probe and returns a HAL that records into it. */\n"
               "%s_hal_t %s_fake_hal(%s_probe_t *probe);\n"
               "/* The last value passed to `call`; false if it was never called. */\n"
               "bool %s_probe_last(const %s_probe_t *probe, const char *call, int64_t *value);\n\n#endif\n",
-              P(m), P(m), P(m), P(m), P(m), p, p, p, p, p, p);
+              P(m), P(m), P(m), P(m), P(m), m->params.n ? m->params.n : 1, p, p, p, p, p, p);
     add(g, "src/gen/fake.h", &b, 0);
 
     sb_init(&b);
@@ -309,6 +328,9 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "}\n",
               m->n_hal || m->sends.n ? "" : "__attribute__((unused)) /* this machine declares no HAL calls */\n", p, P(m), p, p,
               P(m));
+    sb_printf(&b, "\nstatic int fake_instance(void *ctx) {\n    return ((%s_probe_t *)ctx)->instance;\n}\n", p);
+    if (m->params.n)
+        sb_printf(&b, "\nstatic int32_t fake_param(void *ctx, int index) {\n    return ((%s_probe_t *)ctx)->params[index];\n}\n", p);
     sb_printf(&b,
               "\nstatic const void *fake_payload(void *ctx, size_t *len) {\n"
               "    %s_probe_t *p = ctx;\n"
@@ -335,8 +357,10 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    h.ctx = probe;\n"
               "    h.now_ms = fake_now_ms;\n"
               "    h.log = fake_log;\n"
-              "    h.payload = fake_payload;\n",
+              "    h.payload = fake_payload;\n"
+              "    h.instance = fake_instance;\n",
               p, p, p, p);
+    if (m->params.n) sb_puts(&b, "    h.param = fake_param;\n");
     if (m->sends.n) sb_puts(&b, "    h.send = fake_send;\n");
     for (int i = 0; i < m->n_hal; i++) sb_printf(&b, "    h.%s = fake_%s;\n", m->hal[i].call, m->hal[i].call);
     sb_printf(&b,

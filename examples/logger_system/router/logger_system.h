@@ -5,7 +5,8 @@
  * On a device, give each machine its own task (or share one) and call its
  * step function regularly, e.g. every 10 ms. A step handles every event
  * queued for the machine, in channel order, then ticks it. A sync channel
- * delivers at once, inside the sender's call, on the sender's task. */
+ * delivers at once, inside the sender's call, on the sender's task. An event
+ * for a machine with several instances goes to every instance. */
 #ifndef LOGGER_SYSTEM_ROUTER_H
 #define LOGGER_SYSTEM_ROUTER_H
 
@@ -17,6 +18,8 @@
 #include "../sampler/src/gen/machine.h"
 #include "../logger/src/gen/hal.h"
 #include "../logger/src/gen/machine.h"
+#include "../sensor/src/gen/hal.h"
+#include "../sensor/src/gen/machine.h"
 
 /* The largest payload any channel carries, in bytes. */
 #define LOGGER_SYSTEM_PAYLOAD_MAX 64
@@ -27,61 +30,78 @@ typedef struct {
     uint8_t data[LOGGER_SYSTEM_PAYLOAD_MAX];
 } logger_system_msg_t;
 
-#define LOGGER_SYSTEM_CHANNEL_COUNT 6
+#define LOGGER_SYSTEM_DEVICE_INSTANCES 1
+#define LOGGER_SYSTEM_SAMPLER_INSTANCES 1
+#define LOGGER_SYSTEM_LOGGER_INSTANCES 1
+#define LOGGER_SYSTEM_SENSOR_INSTANCES 2
+
+#define LOGGER_SYSTEM_CHANNEL_COUNT 7
 #define LOGGER_SYSTEM_CH_DEVICE_SAMPLER_START 0 /* sync */
 #define LOGGER_SYSTEM_CH_DEVICE_SAMPLER_STOP 1 /* sync */
 #define LOGGER_SYSTEM_CH_DEVICE_LOGGER_START 2 /* sync */
 #define LOGGER_SYSTEM_CH_DEVICE_LOGGER_STOP 3 /* sync */
-#define LOGGER_SYSTEM_CH_SAMPLER_LOGGER_TICK 4 /* queue */
-#define LOGGER_SYSTEM_CH_LOGGER_DEVICE_LOG_FULL 5 /* queue */
+#define LOGGER_SYSTEM_CH_DEVICE_SENSOR_START 4 /* sync */
+#define LOGGER_SYSTEM_CH_SAMPLER_LOGGER_TICK 5 /* queue */
+#define LOGGER_SYSTEM_CH_LOGGER_DEVICE_LOG_FULL 6 /* queue */
 
 struct logger_system_system;
 
 typedef struct {
     struct logger_system_system *sys;
+    int instance;
     const void *payload;
     size_t payload_len;
 } logger_system_slot_t;
 
-/* Each machine's board HAL. Their payload and send fields are not used: the
- * router supplies both. */
+/* Each machine's board HAL, shared by its instances. Their payload, send,
+ * instance and param fields are not used: the router supplies them. */
 typedef struct {
     device_hal_t device;
     sampler_hal_t sampler;
     logger_hal_t logger;
+    sensor_hal_t sensor;
 } logger_system_boards_t;
 
 typedef struct logger_system_system {
     logger_system_boards_t boards;
-    device_machine_t device;
-    device_safe_hal_t device_hal;
-    logger_system_slot_t device_slot;
-    sampler_machine_t sampler;
-    sampler_safe_hal_t sampler_hal;
-    logger_system_slot_t sampler_slot;
-    logger_machine_t logger;
-    logger_safe_hal_t logger_hal;
-    logger_system_slot_t logger_slot;
+    device_machine_t device[1];
+    device_safe_hal_t device_hal[1];
+    logger_system_slot_t device_slot[1];
+    sampler_machine_t sampler[1];
+    sampler_safe_hal_t sampler_hal[1];
+    logger_system_slot_t sampler_slot[1];
+    logger_machine_t logger[1];
+    logger_safe_hal_t logger_hal[1];
+    logger_system_slot_t logger_slot[1];
+    sensor_machine_t sensor[2];
+    sensor_safe_hal_t sensor_hal[2];
+    logger_system_slot_t sensor_slot[2];
     sg_queue_t queue[LOGGER_SYSTEM_CHANNEL_COUNT]; /* sync channels leave theirs unused */
-    logger_system_msg_t storage_4[65];
-    logger_system_msg_t storage_5[5];
+    logger_system_msg_t storage_5[65];
+    logger_system_msg_t storage_6[5];
 } logger_system_system_t;
 
 /* Wires every machine to its board and the channels, then starts each one in
  * the order system.yaml lists them. */
 void logger_system_init(logger_system_system_t *s, const logger_system_boards_t *boards);
-/* Delivers an event to device now, on the caller's task: for events from
- * outside the system, called from device's own task. */
+/* Delivers an event to device now (every instance), on the caller's task: for
+ * events from outside the system, called from device's own task. */
 void logger_system_post_device(logger_system_system_t *s, device_event_t event, const void *data, size_t len);
 void logger_system_step_device(logger_system_system_t *s);
-/* Delivers an event to sampler now, on the caller's task: for events from
- * outside the system, called from sampler's own task. */
+/* Delivers an event to sampler now (every instance), on the caller's task: for
+ * events from outside the system, called from sampler's own task. */
 void logger_system_post_sampler(logger_system_system_t *s, sampler_event_t event, const void *data, size_t len);
 void logger_system_step_sampler(logger_system_system_t *s);
-/* Delivers an event to logger now, on the caller's task: for events from
- * outside the system, called from logger's own task. */
+/* Delivers an event to logger now (every instance), on the caller's task: for
+ * events from outside the system, called from logger's own task. */
 void logger_system_post_logger(logger_system_system_t *s, logger_event_t event, const void *data, size_t len);
 void logger_system_step_logger(logger_system_system_t *s);
+/* Delivers an event to sensor now (every instance), on the caller's task: for
+ * events from outside the system, called from sensor's own task. */
+void logger_system_post_sensor(logger_system_system_t *s, sensor_event_t event, const void *data, size_t len);
+/* Delivers an event to one instance of sensor. */
+void logger_system_post_sensor_at(logger_system_system_t *s, int instance, sensor_event_t event, const void *data, size_t len);
+void logger_system_step_sensor(logger_system_system_t *s);
 /* Steps every machine once, in order. For one task, the host tests and the simulator. */
 void logger_system_step_all(logger_system_system_t *s);
 /* Events a full queue dropped (oldest or newest), or could not take (never). */

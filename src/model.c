@@ -8,7 +8,7 @@
 #include "ydoc.h"
 
 static const char *const ROOT_KEYS[] = {"machine", "events", "hal", "states", "actions",
-                                        "services", "invariants", "steps", "sends", "buses", NULL};
+                                        "services", "invariants", "steps", "sends", "buses", "params", NULL};
 const char *const SG_LANGUAGES[] = {"rust", "c", NULL};
 
 static const char *const MACHINE_KEYS[] = {"id", "version", "language", NULL};
@@ -318,6 +318,7 @@ int model_load(const char *path, SgModel *m, StrList *errors) {
     if (!events) y_err(&r, root, "missing required 'events' list");
     y_strlist(&r, events, "events", &m->events);
     y_strlist(&r, y_get(&r, root, "sends"), "sends", &m->sends);
+    y_strlist(&r, y_get(&r, root, "params"), "params", &m->params);
 
     parse_hal(&r, y_get(&r, root, "hal"), m);
     parse_buses(&r, y_get(&r, root, "buses"), m);

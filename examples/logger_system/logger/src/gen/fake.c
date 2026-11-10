@@ -23,6 +23,10 @@ static void fake_log(void *ctx, const char *msg) {
     p->n_logs++;
 }
 
+static int fake_instance(void *ctx) {
+    return ((logger_probe_t *)ctx)->instance;
+}
+
 static const void *fake_payload(void *ctx, size_t *len) {
     logger_probe_t *p = ctx;
     *len = p->payload_len;
@@ -45,6 +49,7 @@ logger_hal_t logger_fake_hal(logger_probe_t *probe) {
     h.now_ms = fake_now_ms;
     h.log = fake_log;
     h.payload = fake_payload;
+    h.instance = fake_instance;
     h.send = fake_send;
     return h;
 }

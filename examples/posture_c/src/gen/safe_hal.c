@@ -19,3 +19,7 @@ const void *posture_hal_payload(posture_safe_hal_t *hal, size_t *len) {
     *len = 0;
     return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;
 }
+
+int posture_hal_instance(posture_safe_hal_t *hal) {
+    return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
+}

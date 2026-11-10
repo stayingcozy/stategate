@@ -14,6 +14,10 @@ const void *sampler_hal_payload(sampler_safe_hal_t *hal, size_t *len) {
     return hal->inner.payload ? hal->inner.payload(hal->inner.ctx, len) : NULL;
 }
 
+int sampler_hal_instance(sampler_safe_hal_t *hal) {
+    return hal->inner.instance ? hal->inner.instance(hal->inner.ctx) : 0;
+}
+
 void sampler_send_tick(sampler_safe_hal_t *hal, const void *data, size_t len) {
     if (hal->inner.send) hal->inner.send(hal->inner.ctx, SAMPLER_OUT_TICK, data, len);
     else hal->inner.log(hal->inner.ctx, "TICK: no router, dropped");

@@ -377,7 +377,7 @@ expect_sys() {
 }
 
 setup_sys
-expect_sys "system: untouched example is green" "SYSTEM GATE GREEN  3 machines"
+expect_sys "system: untouched example is green" "SYSTEM GATE GREEN  4 machines"
 
 setup_sys
 sed -i 's/^sends: \[TICK\]/sends: []/' sampler/sampler.yaml
@@ -429,8 +429,16 @@ if echo "$out" | grep -q "SYSTEM GATE GREEN" && grep -q "define LOGGER_SYSTEM_PA
 else bad "router: regenerated after a system change, the gate is green again" "expected green and a 2-byte payload limit"; fi
 
 setup_sys
+sed -i 's/params: { mux_ch: \[0, 1\] }/params: { mux_ch: [0] }/' system.yaml
+expect_sys "instances: a param needs one value per instance" "param mux_ch needs a list of 2 integers"
+
+setup_sys
+sed -i 's/, params: { mux_ch: \[0, 1\] }//' system.yaml
+expect_sys "instances: a param the model reads has no values" "machine sensor reads param mux_ch"
+
+setup_sys
 echo "/* tweak */" >> sampler/src/gen/machine.c
-expect_sys "system: one red machine turns the system red" "SYSTEM GATE RED  1 of 3 machines red"
+expect_sys "system: one red machine turns the system red" "SYSTEM GATE RED  1 of 4 machines red"
 
 echo "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

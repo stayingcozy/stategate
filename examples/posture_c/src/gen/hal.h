@@ -13,6 +13,7 @@ typedef struct {
     void (*stim_set_intensity)(void *ctx, uint8_t value);
     /* Set by the system router; NULL in a machine on its own. */
     const void *(*payload)(void *ctx, size_t *len);
+    int (*instance)(void *ctx);
 } posture_hal_t;
 
 struct posture_safe_hal {

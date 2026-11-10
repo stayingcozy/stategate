@@ -22,6 +22,10 @@ static const void *rt_device_payload(void *ctx, size_t *len) {
     return sl->payload;
 }
 
+static int rt_device_instance(void *ctx) {
+    return ((logger_system_slot_t *)ctx)->instance;
+}
+
 /* ---- sampler: its board HAL behind the router ---- */
 
 static uint64_t rt_sampler_now_ms(void *ctx) {
@@ -40,6 +44,10 @@ static const void *rt_sampler_payload(void *ctx, size_t *len) {
     return sl->payload;
 }
 
+static int rt_sampler_instance(void *ctx) {
+    return ((logger_system_slot_t *)ctx)->instance;
+}
+
 /* ---- logger: its board HAL behind the router ---- */
 
 static uint64_t rt_logger_now_ms(void *ctx) {
@@ -56,6 +64,45 @@ static const void *rt_logger_payload(void *ctx, size_t *len) {
     logger_system_slot_t *sl = ctx;
     *len = sl->payload_len;
     return sl->payload;
+}
+
+static int rt_logger_instance(void *ctx) {
+    return ((logger_system_slot_t *)ctx)->instance;
+}
+
+/* ---- sensor: its board HAL behind the router ---- */
+
+static uint64_t rt_sensor_now_ms(void *ctx) {
+    logger_system_slot_t *sl = ctx;
+    return sl->sys->boards.sensor.now_ms(sl->sys->boards.sensor.ctx);
+}
+
+/* Log lines from an instance start with its number. */
+static void rt_sensor_log(void *ctx, const char *msg) {
+    logger_system_slot_t *sl = ctx;
+    char line[192];
+    snprintf(line, sizeof line, "[%d] %s", sl->instance, msg);
+    sl->sys->boards.sensor.log(sl->sys->boards.sensor.ctx, line);
+}
+
+static const void *rt_sensor_payload(void *ctx, size_t *len) {
+    logger_system_slot_t *sl = ctx;
+    *len = sl->payload_len;
+    return sl->payload;
+}
+
+static int rt_sensor_instance(void *ctx) {
+    return ((logger_system_slot_t *)ctx)->instance;
+}
+
+/* [instance][param], in the order of sensor's model. */
+static const int32_t sensor_params[2][1] = {
+    {0},
+    {1},
+};
+
+static int32_t rt_sensor_param(void *ctx, int index) {
+    return sensor_params[((logger_system_slot_t *)ctx)->instance][index];
 }
 
 /* ---- delivery ---- */
@@ -80,37 +127,64 @@ static void push(logger_system_system_t *s, int ch, int event, const void *data,
     }
 }
 
-void logger_system_post_device(logger_system_system_t *s, device_event_t event, const void *data, size_t len) {
-    logger_system_slot_t *sl = &s->device_slot;
+static void logger_system_post_device_at(logger_system_system_t *s, int instance, device_event_t event, const void *data, size_t len) {
+    logger_system_slot_t *sl = &s->device_slot[instance];
     const void *was = sl->payload;
     size_t was_len = sl->payload_len;
     sl->payload = data;
     sl->payload_len = len;
-    device_send(&s->device, event, &s->device_hal);
+    device_send(&s->device[instance], event, &s->device_hal[instance]);
+    sl->payload = was;
+    sl->payload_len = was_len;
+}
+
+void logger_system_post_device(logger_system_system_t *s, device_event_t event, const void *data, size_t len) {
+    for (int i = 0; i < 1; i++) logger_system_post_device_at(s, i, event, data, len);
+}
+
+static void logger_system_post_sampler_at(logger_system_system_t *s, int instance, sampler_event_t event, const void *data, size_t len) {
+    logger_system_slot_t *sl = &s->sampler_slot[instance];
+    const void *was = sl->payload;
+    size_t was_len = sl->payload_len;
+    sl->payload = data;
+    sl->payload_len = len;
+    sampler_send(&s->sampler[instance], event, &s->sampler_hal[instance]);
     sl->payload = was;
     sl->payload_len = was_len;
 }
 
 void logger_system_post_sampler(logger_system_system_t *s, sampler_event_t event, const void *data, size_t len) {
-    logger_system_slot_t *sl = &s->sampler_slot;
+    for (int i = 0; i < 1; i++) logger_system_post_sampler_at(s, i, event, data, len);
+}
+
+static void logger_system_post_logger_at(logger_system_system_t *s, int instance, logger_event_t event, const void *data, size_t len) {
+    logger_system_slot_t *sl = &s->logger_slot[instance];
     const void *was = sl->payload;
     size_t was_len = sl->payload_len;
     sl->payload = data;
     sl->payload_len = len;
-    sampler_send(&s->sampler, event, &s->sampler_hal);
+    logger_send(&s->logger[instance], event, &s->logger_hal[instance]);
     sl->payload = was;
     sl->payload_len = was_len;
 }
 
 void logger_system_post_logger(logger_system_system_t *s, logger_event_t event, const void *data, size_t len) {
-    logger_system_slot_t *sl = &s->logger_slot;
+    for (int i = 0; i < 1; i++) logger_system_post_logger_at(s, i, event, data, len);
+}
+
+void logger_system_post_sensor_at(logger_system_system_t *s, int instance, sensor_event_t event, const void *data, size_t len) {
+    logger_system_slot_t *sl = &s->sensor_slot[instance];
     const void *was = sl->payload;
     size_t was_len = sl->payload_len;
     sl->payload = data;
     sl->payload_len = len;
-    logger_send(&s->logger, event, &s->logger_hal);
+    sensor_send(&s->sensor[instance], event, &s->sensor_hal[instance]);
     sl->payload = was;
     sl->payload_len = was_len;
+}
+
+void logger_system_post_sensor(logger_system_system_t *s, sensor_event_t event, const void *data, size_t len) {
+    for (int i = 0; i < 2; i++) logger_system_post_sensor_at(s, i, event, data, len);
 }
 
 static void rt_device_send(void *ctx, device_out_t event, const void *data, size_t len) {
@@ -120,6 +194,7 @@ static void rt_device_send(void *ctx, device_out_t event, const void *data, size
     case DEVICE_OUT_START:
         logger_system_post_sampler(s, SAMPLER_EV_START, data, len);
         logger_system_post_logger(s, LOGGER_EV_START, data, len);
+        logger_system_post_sensor(s, SENSOR_EV_START, data, len);
         break;
     case DEVICE_OUT_STOP:
         logger_system_post_sampler(s, SAMPLER_EV_STOP, data, len);
@@ -133,7 +208,7 @@ static void rt_sampler_send(void *ctx, sampler_out_t event, const void *data, si
     logger_system_system_t *s = sl->sys;
     switch (event) {
     case SAMPLER_OUT_TICK:
-        push(s, 4, LOGGER_EV_TICK, data, len, rt_sampler_log, ctx);
+        push(s, 5, LOGGER_EV_TICK, data, len, rt_sampler_log, ctx);
         break;
     }
 }
@@ -143,7 +218,7 @@ static void rt_logger_send(void *ctx, logger_out_t event, const void *data, size
     logger_system_system_t *s = sl->sys;
     switch (event) {
     case LOGGER_OUT_LOG_FULL:
-        push(s, 5, DEVICE_EV_LOG_FULL, data, len, rt_logger_log, ctx);
+        push(s, 6, DEVICE_EV_LOG_FULL, data, len, rt_logger_log, ctx);
         break;
     }
 }
@@ -151,68 +226,93 @@ static void rt_logger_send(void *ctx, logger_out_t event, const void *data, size
 void logger_system_init(logger_system_system_t *s, const logger_system_boards_t *boards) {
     memset(s, 0, sizeof *s);
     s->boards = *boards;
-    {
+    for (int i = 0; i < 1; i++) {
         device_hal_t h;
         memset(&h, 0, sizeof h);
-        s->device_slot.sys = s;
-        h.ctx = &s->device_slot;
+        s->device_slot[i].sys = s;
+        s->device_slot[i].instance = i;
+        h.ctx = &s->device_slot[i];
         h.now_ms = rt_device_now_ms;
         h.log = rt_device_log;
         h.payload = rt_device_payload;
+        h.instance = rt_device_instance;
         h.send = rt_device_send;
-        s->device_hal = device_safe_hal(h);
+        s->device_hal[i] = device_safe_hal(h);
     }
-    {
+    for (int i = 0; i < 1; i++) {
         sampler_hal_t h;
         memset(&h, 0, sizeof h);
-        s->sampler_slot.sys = s;
-        h.ctx = &s->sampler_slot;
+        s->sampler_slot[i].sys = s;
+        s->sampler_slot[i].instance = i;
+        h.ctx = &s->sampler_slot[i];
         h.now_ms = rt_sampler_now_ms;
         h.log = rt_sampler_log;
         h.payload = rt_sampler_payload;
+        h.instance = rt_sampler_instance;
         h.send = rt_sampler_send;
-        s->sampler_hal = sampler_safe_hal(h);
+        s->sampler_hal[i] = sampler_safe_hal(h);
     }
-    {
+    for (int i = 0; i < 1; i++) {
         logger_hal_t h;
         memset(&h, 0, sizeof h);
-        s->logger_slot.sys = s;
-        h.ctx = &s->logger_slot;
+        s->logger_slot[i].sys = s;
+        s->logger_slot[i].instance = i;
+        h.ctx = &s->logger_slot[i];
         h.now_ms = rt_logger_now_ms;
         h.log = rt_logger_log;
         h.payload = rt_logger_payload;
+        h.instance = rt_logger_instance;
         h.send = rt_logger_send;
-        s->logger_hal = logger_safe_hal(h);
+        s->logger_hal[i] = logger_safe_hal(h);
     }
-    sg_queue_init(&s->queue[4], s->storage_4, sizeof(logger_system_msg_t), 64, SG_DROP_NEVER); /* sampler -> logger TICK */
-    sg_queue_init(&s->queue[5], s->storage_5, sizeof(logger_system_msg_t), 4, SG_DROP_OLDEST); /* logger -> device LOG_FULL */
-    device_start(&s->device, &s->device_hal);
-    sampler_start(&s->sampler, &s->sampler_hal);
-    logger_start(&s->logger, &s->logger_hal);
+    for (int i = 0; i < 2; i++) {
+        sensor_hal_t h;
+        memset(&h, 0, sizeof h);
+        s->sensor_slot[i].sys = s;
+        s->sensor_slot[i].instance = i;
+        h.ctx = &s->sensor_slot[i];
+        h.now_ms = rt_sensor_now_ms;
+        h.log = rt_sensor_log;
+        h.payload = rt_sensor_payload;
+        h.instance = rt_sensor_instance;
+        h.param = rt_sensor_param;
+        s->sensor_hal[i] = sensor_safe_hal(h);
+    }
+    sg_queue_init(&s->queue[5], s->storage_5, sizeof(logger_system_msg_t), 64, SG_DROP_NEVER); /* sampler -> logger TICK */
+    sg_queue_init(&s->queue[6], s->storage_6, sizeof(logger_system_msg_t), 4, SG_DROP_OLDEST); /* logger -> device LOG_FULL */
+    for (int i = 0; i < 1; i++) device_start(&s->device[i], &s->device_hal[i]);
+    for (int i = 0; i < 1; i++) sampler_start(&s->sampler[i], &s->sampler_hal[i]);
+    for (int i = 0; i < 1; i++) logger_start(&s->logger[i], &s->logger_hal[i]);
+    for (int i = 0; i < 2; i++) sensor_start(&s->sensor[i], &s->sensor_hal[i]);
 }
 
 void logger_system_step_device(logger_system_system_t *s) {
     logger_system_msg_t msg;
-    while (sg_queue_pop(&s->queue[5], &msg)) /* from logger: LOG_FULL */
+    while (sg_queue_pop(&s->queue[6], &msg)) /* from logger: LOG_FULL */
         logger_system_post_device(s, (device_event_t)msg.event, msg.data, msg.len);
-    device_tick(&s->device, &s->device_hal);
+    for (int i = 0; i < 1; i++) device_tick(&s->device[i], &s->device_hal[i]);
 }
 
 void logger_system_step_sampler(logger_system_system_t *s) {
-    sampler_tick(&s->sampler, &s->sampler_hal);
+    for (int i = 0; i < 1; i++) sampler_tick(&s->sampler[i], &s->sampler_hal[i]);
 }
 
 void logger_system_step_logger(logger_system_system_t *s) {
     logger_system_msg_t msg;
-    while (sg_queue_pop(&s->queue[4], &msg)) /* from sampler: TICK */
+    while (sg_queue_pop(&s->queue[5], &msg)) /* from sampler: TICK */
         logger_system_post_logger(s, (logger_event_t)msg.event, msg.data, msg.len);
-    logger_tick(&s->logger, &s->logger_hal);
+    for (int i = 0; i < 1; i++) logger_tick(&s->logger[i], &s->logger_hal[i]);
+}
+
+void logger_system_step_sensor(logger_system_system_t *s) {
+    for (int i = 0; i < 2; i++) sensor_tick(&s->sensor[i], &s->sensor_hal[i]);
 }
 
 void logger_system_step_all(logger_system_system_t *s) {
     logger_system_step_device(s);
     logger_system_step_sampler(s);
     logger_system_step_logger(s);
+    logger_system_step_sensor(s);
 }
 
 uint32_t logger_system_dropped(const logger_system_system_t *s, int channel) {

@@ -27,9 +27,15 @@ add_library(logger_system_logger STATIC ${logger_SOURCES})
 target_include_directories(logger_system_logger PRIVATE logger/src)
 target_compile_options(logger_system_logger PRIVATE ${SG_WARNINGS})
 
+file(GLOB sensor_SOURCES ${CMAKE_CURRENT_LIST_DIR}/sensor/src/gen/*.c ${CMAKE_CURRENT_LIST_DIR}/sensor/src/actions/*.c
+     ${CMAKE_CURRENT_LIST_DIR}/sensor/src/services/*.c)
+add_library(logger_system_sensor STATIC ${sensor_SOURCES})
+target_include_directories(logger_system_sensor PRIVATE sensor/src)
+target_compile_options(logger_system_sensor PRIVATE ${SG_WARNINGS})
+
 add_library(logger_system_router STATIC router/logger_system.c router/sg_queue.c)
 target_compile_options(logger_system_router PRIVATE ${SG_WARNINGS})
-target_link_libraries(logger_system_router PUBLIC logger_system_device logger_system_sampler logger_system_logger)
+target_link_libraries(logger_system_router PUBLIC logger_system_device logger_system_sampler logger_system_logger logger_system_sensor)
 
 include(FetchContent)
 if(DEFINED ENV{STATEGATE_UNITY_DIR})

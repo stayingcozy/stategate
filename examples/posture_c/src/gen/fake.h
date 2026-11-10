@@ -17,6 +17,9 @@ typedef struct {
     /* The payload the machine sees for the event being handled. */
     const void *payload;
     size_t payload_len;
+    /* The instance and params the machine sees. */
+    int instance;
+    int32_t params[1];
 } posture_probe_t;
 
 /* Clears the probe and returns a HAL that records into it. */
