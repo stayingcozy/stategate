@@ -13,7 +13,8 @@ app that runs each step work end to end on the posture wearable example.
 ## Build
 
 Needs a C11 compiler, CMake, libyaml (`libyaml-dev` on Debian/Ubuntu,
-`brew install libyaml` on macOS) and, for the generated code, Rust. The viewer
+`brew install libyaml` on macOS) and, for the generated code, Rust or a C
+compiler, depending on the project's language. The viewer
 fetches raylib 5.5 at configure time; on Linux it also needs the X11 and GL
 headers (`libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev`).
 Pass `-DSTATEGATE_VIEWER=OFF` to build only the command-line tool.
@@ -68,6 +69,26 @@ The simulation runs Step 0 on fake hardware:
    13.0s  NUDGE
    14.5s  posture.Nudging --NUDGE_DONE--> posture.Slouching
 ```
+
+### The same machine in C
+
+A project picks one language in its model (`machine: { ..., language: c }` or
+`rust`) and stategate generates only that backend. `examples/posture_c` is the
+posture machine in C: the same 48 generated tests, written for
+[Unity](https://github.com/ThrowTheSwitch/Unity), and the same simulator output.
+
+```sh
+cd examples/posture_c
+stategate gate                   # cmake, build with -Wswitch-enum -Werror, ctest
+build/sim 15000 POWER_ON CALIBRATED
+```
+
+The generated C is plain C11. Every `switch` lists every case with no
+`default`, so a missing (state, event) pair is a compile error. Node code
+includes `gen/nodes.h` and gets only the safe HAL; the gate refuses a node that
+includes the raw `gen/hal.h`. The generated `CMakeLists.txt` also works as an
+ESP-IDF component: put the project folder under `components/`. Unity is fetched
+at configure time; set `STATEGATE_UNITY_DIR` to a local copy to build offline.
 
 ## A new project, end to end
 
@@ -345,6 +366,5 @@ Checks run in order and stop at the first failure.
   reach comes later.
 - Flat states only; no nesting, parallel regions or history yet.
 - The app's simulator follows the model's transition table in C, separately
-  from the generated Rust. Both read the same table, and the generated tests
-  cover the Rust side.
-- Rust is the only target language so far; C is next.
+  from the generated code. Both read the same table, and the generated tests
+  cover the generated side.

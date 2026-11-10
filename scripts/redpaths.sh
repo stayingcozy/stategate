@@ -314,5 +314,51 @@ if echo "$out" | grep -q '"init": true' && echo "$out" | grep -q '"valid": true'
     && echo "$out" | grep -q '"signed_off": false'; then ok "status after init and a model: valid, not generated, not signed"
 else bad "status after init and a model: valid, not generated, not signed" "$out"; fi
 
+# The C backend: the same gate on a C project. Unity is fetched once and shared.
+if [ ! -d "$WORK/unity" ]; then
+    git clone -q --depth 1 --branch v2.6.0 https://github.com/ThrowTheSwitch/Unity.git "$WORK/unity"
+fi
+export STATEGATE_UNITY_DIR="$WORK/unity"
+setup_c() {
+    dir="$WORK/case_c"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    (cd "$ROOT/examples/posture_c" && tar cf - --exclude=./build .) | (cd "$dir" && tar xmf -)
+    cd "$dir"
+    rm -f .fsm/tickets/*.yaml .fsm/gate.json
+    cat > .fsm/tickets/T900.yaml <<'EOF2'
+id: T900
+title: "red path case"
+step: step0
+status: open
+base: ""
+failures: 0
+nodes: ["posture.Nudging"]
+files: ["src/actions/start_nudge.c", "src/actions/stim_off.c", "tests/logic_*.c"]
+EOF2
+    printf '\n## T900\nTouches posture.Nudging.\n' >> CHANGELOG.md
+    git init -q . && git add -A && git -c user.name=t -c user.email=t@t commit -qm base
+    architect approve ticket start T900 > /dev/null
+}
+
+setup_c
+expect "C: untouched example is green" ""
+
+setup_c
+sed -i 's|#include "gen/nodes.h"|#include "gen/nodes.h"\n#include "gen/hal.h"|' src/actions/start_nudge.c
+expect "C: a node includes the raw HAL" no_wildcards
+
+setup_c
+sed -i 's/case POSTURE_STATE_OFF: return "posture.Off";/default: return "posture.Off";/' src/gen/machine.c
+expect "C: hand-edited generated file" drift
+
+setup_c
+sed -i 's/posture_hal_stim_set_intensity(hal, 0);/posture_hal_stim_set_intensity(hal, 1);/' src/actions/stim_off.c
+expect "C: a logic test fails" tests
+
+setup_c
+sed -i 's/posture_hal_log(hal, "NUDGE");/posture_hal_log(hal, "NUDGE")/' src/actions/start_nudge.c
+expect "C: node code that does not compile" tests
+
 echo "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

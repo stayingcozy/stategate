@@ -1,0 +1,19 @@
+{
+  "generator": "stategate",
+  "model": "posture.yaml",
+  "model_hash": "f1f398f7d3373ff2991548743eaf7f4216cbbb56262756b2db06252a05818421",
+  "files": {
+    "CMakeLists.txt": "f5b97c030e6d4459854955633d7e77ac90d7444d110ca875f415d2b06ee9caf1",
+    "src/gen/safe_hal.h": "3d5a8082724886bc2741e219e80fcdb2ff4784808ae551948f31b98a7ba22929",
+    "src/gen/hal.h": "bfbb241e81c407beaa13032c5383c0147e6aadede6f21513137a54861df6b728",
+    "src/gen/safe_hal.c": "b32c233f1fe0905526acb37a357eed9cb26ed19de70f41595681b98878fe91e9",
+    "src/gen/fake.h": "3c442af95d9618f4350218101ff979afab73166923835b3d851776e85dba1d8e",
+    "src/gen/fake.c": "0b794d905487f58e434224cec2fe747414cbbe91ef77d360f1b8c61956dc4cce",
+    "src/gen/machine.h": "f25ca66f8b8d520d545246d5f96fc3fc23e44fd44064c2802bd0a87bb63f0969",
+    "src/gen/nodes.h": "8527489000cffe46a0696977c7584e3cea8d1dda1999c1651e1f06bd07be78c0",
+    "src/gen/machine.c": "90377ac85f14c2bd0eb7a8c7c3e0c09eabbec080e618fce01e223073b11bf012",
+    "tests/transitions.c": "e3f98b76a0b36afa1e9bfa790c72e6093ea7f96208e659605b6be7e5ce2459e6",
+    "tests/invariants.c": "8bc79b5c32780a7b1339fdcc9627afc54ebbcc93d56e002e2a0e545d165a6d5e",
+    "examples/sim.c": "d65c8b6948851b856fbf077e9a0b8be6938444ca7075f982c8533b6a3547d6c0"
+  }
+}

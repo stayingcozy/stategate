@@ -3,12 +3,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gen_c.h"
 #include "gen_rust.h"
 
 static const char *const RUST_IGNORE[] = {"/target", "Cargo.lock", NULL};
+static const char *const C_IGNORE[] = {"/build", NULL};
 
 static const Backend BACKENDS[] = {
     {"rust", ".rs", gen_rust, rust_check_wildcards, rust_run_tests, RUST_IGNORE},
+    {"c", ".c", gen_c, c_check_wildcards, c_run_tests, C_IGNORE},
 };
 
 const Backend *backend_named(const char *language) {
