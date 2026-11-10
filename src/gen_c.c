@@ -252,6 +252,7 @@ static void gen_fake(const SgModel *m, GenSet *g) {
     header(&b, m);
     sb_printf(&b,
               "#include \"fake.h\"\n\n#include <stdio.h>\n#include <string.h>\n\n"
+              "%s"
               "static void record(%s_probe_t *p, const char *call, int64_t value) {\n"
               "    if (p->n_calls == %s_FAKE_MAX) return;\n"
               "    p->calls[p->n_calls].call = call;\n"
@@ -266,7 +267,7 @@ static void gen_fake(const SgModel *m, GenSet *g) {
               "    snprintf(p->logs[p->n_logs].msg, sizeof p->logs[p->n_logs].msg, \"%%s\", msg);\n"
               "    p->n_logs++;\n"
               "}\n",
-              p, P(m), p, p, P(m));
+              m->n_hal ? "" : "__attribute__((unused)) /* this machine declares no HAL calls */\n", p, P(m), p, p, P(m));
     for (int i = 0; i < m->n_hal; i++)
         sb_printf(&b, "\nstatic void fake_%s(void *ctx, %s value) {\n    record(ctx, \"%s\", (int64_t)value);\n}\n",
                   m->hal[i].call, ctype(m->hal[i].arg), m->hal[i].call);
@@ -471,7 +472,7 @@ static void gen_machine(const SgModel *m, GenSet *g) {
                   "    }\n",
                   v->id, v->limit_ms, v->state, st(m, v->state), v->limit_ms, p, ev(m, v->exit_event));
     }
-    sb_printf(&b, "    %s_event_t event;\n    switch (m->state) {\n", p);
+    sb_printf(&b, "    (void)elapsed;\n    %s_event_t event;\n    switch (m->state) {\n", p);
     for (int i = 0; i < m->n_states; i++) {
         const State *s = &m->states[i];
         sb_printf(&b, "    case %s:\n", st(m, s->id));

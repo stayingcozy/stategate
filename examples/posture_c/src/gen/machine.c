@@ -228,6 +228,7 @@ void posture_tick(posture_machine_t *m, posture_safe_hal_t *hal) {
         posture_send(m, POSTURE_EV_NUDGE_DONE, hal);
         return;
     }
+    (void)elapsed;
     posture_event_t event;
     switch (m->state) {
     case POSTURE_STATE_OFF:
